@@ -1,0 +1,12 @@
+[package]
+name = "splitstream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cidre = { git = "https://github.com/yury/cidre", rev = "a5ce94f2600f096b13a8eefde1dbbce9dff89064" }
+fixed-resample = "0.9.1"
+log = "0.4.28"
+opus = "0.3.0"
+ringbuf = "0.4.8"
+tokio-util = "0.7.16"
