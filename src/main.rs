@@ -1,5 +1,9 @@
+use fixed_resample::rubato::{SincFixedOut, SincInterpolationParameters};
 use opus::Encoder;
-use ringbuf::traits::Consumer;
+use ringbuf::{
+    HeapRb,
+    traits::{Consumer, Split},
+};
 
 pub mod audio_input_buffers;
 pub mod macos_device;
@@ -13,6 +17,7 @@ fn main() {
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
 
     loop {
+        // 1. Read from aggregate device ring buffers
         let mut mic_buffer = [0.0_f32; 512];
         let mut sys_buffer = [0.0_f32; 512];
         let mic_read = mic_consumer.pop_slice(&mut mic_buffer);
@@ -25,9 +30,34 @@ fn main() {
                 mic_read + sys_read
             );
         }
-        let mut mic_resample_buffer = [0.0_f32; 512];
-        let mut sys_resample_buffer = [0.0_f32; 512];
+        // 2. Accumulate into another ring buffer for resampling
+        let (mic_resample_prod, mic_resample_cons) = HeapRb::<f32>::new(2048).split();
+        let (sys_resample_prod, sys_resample_cons) = HeapRb::<f32>::new(2048).split();
     }
+}
+
+fn build_resampler(in_sample_rate: u32, out_sample_rate: u32) -> SincFixedOut<f32> {
+    let resample_ratio = out_sample_rate as f64 / in_sample_rate as f64; // e.g. 48000 / 44100 = 1.088435
+    let max_resample_ratio_relative = 3.1; // Allow for some variance in sample rate
+
+    let parameters = SincInterpolationParameters {
+        sinc_len: 256,
+        f_cutoff: 0.95,
+        oversampling_factor: 128,
+        interpolation: fixed_resample::rubato::SincInterpolationType::Linear,
+        window: fixed_resample::rubato::WindowFunction::BlackmanHarris2,
+    };
+
+    let resampler = SincFixedOut::<f32>::new(
+        resample_ratio,
+        max_resample_ratio_relative,
+        parameters,
+        320,
+        2,
+    )
+    .expect("Failed to create resampler");
+
+    resampler
 }
 
 fn build_encoder(in_sample_rate: u32) -> Encoder {
