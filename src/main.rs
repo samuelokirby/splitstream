@@ -7,6 +7,8 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
 };
 
+use crate::websocket_client::WebSocketClient;
+
 pub mod audio_input_buffers;
 pub mod macos_device;
 pub mod websocket_client;
@@ -33,7 +35,10 @@ fn main() {
     let rb = HeapRb::<f32>::new(4096);
     let (mut resample_prod, mut resample_cons) = rb.split();
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
-
+    let ws_client: WebSocketClient = WebSocketClient::new(
+        "your_access_token".to_string(),
+        "ws://localhost:8080/audio/stream".to_string(),
+    );
     loop {
         // 1. Read from aggregate device ring buffers
         let mut mic_buffer = [0.0_f32; 512];
