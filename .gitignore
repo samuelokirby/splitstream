@@ -1,2 +1,4 @@
 /target
-output.wav
+*.wav
+*.opus
+*.ogg
