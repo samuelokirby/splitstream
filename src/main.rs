@@ -1,7 +1,11 @@
-use std::time::Duration;
+use std::{
+    fs::File,
+    io::{self, Write},
+    time::{Duration, Instant},
+};
 
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
-use opus::Encoder;
+use opus::{Decoder, Encoder};
 use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
@@ -22,7 +26,8 @@ async fn main() {
         "Aggregate device initialized with {}hz nominal sample rate",
         dev.nominal_sample_rate
     );
-    let in_sample_rate = dev.nominal_sample_rate | 16_000;
+    let in_sample_rate = dev.nominal_sample_rate;
+    println!("Using input sample rate: {}", in_sample_rate);
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
     let mut resampler = build_resampler(in_sample_rate);
     let mut input_buffers = resampler.input_buffer_allocate(false);
@@ -65,6 +70,8 @@ async fn main() {
         }
     });
 
+    let mut opus_packets = Vec::new();
+    let now = Instant::now();
     loop {
         // 1. Read from aggregate device ring buffers
         let mut mic_buffer = [0.0_f32; 512];
@@ -137,15 +144,21 @@ async fn main() {
                         println!("Encoded frame size: {}", len);
                         let encoded = encoded[..len].to_vec();
                         println!("{:#?}", encoded);
+                        opus_packets.push(encoded.clone());
                         let _ = audio_tx.send(encoded);
                     }
                 }
             }
         }
-
-        // Add this to yield control to the Tokio runtime (allows WebSocket tasks to run)
-        tokio::time::sleep(Duration::from_millis(0)).await;
+        if now.elapsed() > Duration::from_secs(10) {
+            if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
+                eprintln!("Failed to write raw Opus: {}", e);
+            }
+            break;
+        }
     }
+
+    // After the loop, write raw Opus packets to file
 }
 
 fn build_resampler(in_sample_rate: u32) -> SincFixedOut<f32> {
@@ -184,4 +197,35 @@ fn build_encoder(in_sample_rate: u32) -> Encoder {
 fn frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
     ((sample_rate * FRAME_MS) / 1000.0).round() as usize
+}
+
+fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Result<()> {
+    let sample_rate = 16_000;
+    let channels = opus::Channels::Stereo;
+    let mut decoder = Decoder::new(sample_rate, channels).expect("Failed to create Opus decoder");
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(output_path, spec).unwrap();
+
+    let mut decoded_buf = vec![0i16; 960 * 2]; // 960 samples = 20ms @ 48k, scaled to 16k later
+
+    for packet in opus_packets {
+        // Decode into PCM i16 samples
+        match decoder.decode(packet, &mut decoded_buf, false) {
+            Ok(num_samples) => {
+                for sample in &decoded_buf[..num_samples * 2] {
+                    writer.write_sample(*sample);
+                }
+            }
+            Err(err) => eprintln!("Decode error: {:?}", err),
+        }
+    }
+
+    writer.finalize();
+    Ok(())
 }
