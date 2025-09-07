@@ -6,6 +6,7 @@ use ringbuf::{
     HeapRb,
     traits::{Consumer, Observer, Producer, Split},
 };
+use tokio::sync::mpsc;
 
 use crate::websocket_client::WebSocketClient;
 
@@ -16,6 +17,7 @@ pub mod websocket_client;
 #[tokio::main]
 async fn main() {
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
+    let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     println!(
         "Aggregate device initialized with {}hz nominal sample rate",
         dev.nominal_sample_rate
@@ -40,6 +42,28 @@ async fn main() {
         "your_access_token".to_string(),
         "ws://localhost:8080/audio/stream".to_string(),
     );
+
+    // Add channels for transcripts (to receive from the WebSocket server)
+    let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<String>();
+
+    // Spawn a task to handle WebSocket transmission (sends audio frames as they arrive)
+    tokio::spawn(async move {
+        println!("SENT TO WEBSOCKET");
+        if let Err(e) = ws_client
+            .transmit_audio_frames(audio_rx, transcript_tx)
+            .await
+        {
+            eprintln!("WebSocket transmission error: {}", e);
+        }
+    });
+
+    // Spawn a task to handle incoming transcripts (prints them as they arrive)
+    let mut transcript_rx = transcript_rx;
+    tokio::spawn(async move {
+        while let Some(transcript) = transcript_rx.recv().await {
+            println!("Received transcript: {}", transcript);
+        }
+    });
 
     loop {
         // 1. Read from aggregate device ring buffers
@@ -108,14 +132,19 @@ async fn main() {
                     // Pop all required samples into the frame buffer
                     let popped = resample_cons.pop_slice(&mut frame[..]);
                     if popped == frame.len() {
-                        let mut encoded = vec![0u8; 1024];
+                        let mut encoded = vec![0u8; 512];
                         let len = encoder.encode_float(&frame, &mut encoded).unwrap();
                         println!("Encoded frame size: {}", len);
-                        // TODO: Send or save encoded[..len]
+                        let encoded = encoded[..len].to_vec();
+                        println!("{:#?}", encoded);
+                        let _ = audio_tx.send(encoded);
                     }
                 }
             }
         }
+
+        // Add this to yield control to the Tokio runtime (allows WebSocket tasks to run)
+        tokio::time::sleep(Duration::from_millis(0)).await;
     }
 }
 
