@@ -9,6 +9,7 @@ use ringbuf::{
 
 pub mod audio_input_buffers;
 pub mod macos_device;
+pub mod websocket_client;
 
 fn main() {
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
@@ -32,7 +33,6 @@ fn main() {
     let rb = HeapRb::<f32>::new(4096);
     let (mut resample_prod, mut resample_cons) = rb.split();
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
-    let mut file = File::create("output.ogg").unwrap();
 
     loop {
         // 1. Read from aggregate device ring buffers
