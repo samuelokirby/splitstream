@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::{fs::File, time::Duration};
 
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
 use opus::Encoder;
 use ringbuf::{
-    HeapRb,
-    traits::{Consumer, Split},
+    HeapRb, SharedRb,
+    traits::{Consumer, Observer, Producer, Split},
 };
 
 pub mod audio_input_buffers;
@@ -28,9 +28,14 @@ fn main() {
     );
     println!("Starting in three seconds...");
     std::thread::sleep(Duration::from_secs(3));
+
+    let rb = HeapRb::<f32>::new(4096);
+    let (mut resample_prod, mut resample_cons) = rb.split();
+    let mut encoder = build_encoder(16_000); // Encode at 16kHz
+    let mut file = File::create("output.ogg").unwrap();
+
     loop {
         // 1. Read from aggregate device ring buffers
-
         let mut mic_buffer = [0.0_f32; 512];
         let mut sys_buffer = [0.0_f32; 512];
         let mic_read = mic_consumer.pop_slice(&mut mic_buffer);
@@ -79,7 +84,30 @@ fn main() {
             input_buffers[0].drain(0..required_input);
             input_buffers[1].drain(0..required_input);
 
-            // TODO: Handle resampled output (e.g., encode with Opus)
+            if let Ok(_) = result {
+                // Push resampled data to ring buffer
+                for &sample in out_mic.iter() {
+                    resample_prod.push_slice(&[sample]);
+                }
+                for &sample in out_sys.iter() {
+                    resample_prod.push_slice(&[sample]);
+                }
+
+                // Encode when enough data for a frame (e.g., 320 samples at 16kHz for ~20ms)
+                let frame_sz = frame_size(16_000.0);
+                if resample_cons.occupied_len() >= frame_sz * 2 {
+                    // Stereo
+                    let mut frame = vec![0.0_f32; frame_sz * 2];
+                    // Pop all required samples into the frame buffer
+                    let popped = resample_cons.pop_slice(&mut frame[..]);
+                    if popped == frame.len() {
+                        let mut encoded = vec![0u8; 1024];
+                        let len = encoder.encode_float(&frame, &mut encoded).unwrap();
+                        println!("Encoded frame size: {}", len);
+                        // TODO: Send or save encoded[..len]
+                    }
+                }
+            }
         }
     }
 }
