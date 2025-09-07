@@ -1,8 +1,6 @@
 // src/macos_device.rs
 use ca::aggregate_device_keys as agg_keys;
 use ca::sub_device_keys as sub_keys;
-use cidre::at::AudioConverterRef;
-use cidre::at::audio::ConverterQuality as Quality;
 use cidre::core_audio::DeviceIoProc;
 use cidre::{arc, av, cat, cf, core_audio as ca, ns, os};
 use log::debug;
@@ -26,12 +24,12 @@ pub struct OSXInputDevice {
     pub nominal_sample_rate: u32,
     is_capturing: bool,
     agg_desc: arc::Retained<cf::DictionaryOf<cf::String, cf::Type>>,
-    agg_device: Option<ca::AggregateDevice>,
+    _agg_device: Option<ca::AggregateDevice>,
     pub tap: ca::TapGuard,
     started_device: Option<ca::hardware::StartedDevice<ca::AggregateDevice>>,
     ctx: Option<Box<OSXIoProcContext>>, // Store context to keep it alive
-    proc_id: Option<DeviceIoProc>,
-    cancel_token: Option<CancellationToken>,
+    _proc_id: Option<DeviceIoProc>,
+    _cancel_token: Option<CancellationToken>,
 }
 
 ////////
@@ -49,12 +47,12 @@ impl OSXInputDevice {
             nominal_sample_rate: tap.asbd().unwrap().sample_rate as u32,
             is_capturing: false,
             agg_desc,
-            agg_device: None,
+            _agg_device: None,
             tap,
             started_device: None,
             ctx: None,
-            proc_id: None,
-            cancel_token: None,
+            _proc_id: None,
+            _cancel_token: None,
         })
     }
 
@@ -155,7 +153,7 @@ impl OSXInputDevice {
         Ok((mic_consumer, sys_consumer))
     }
 
-    fn stop_capture(&mut self) -> Result<(), String> {
+    fn _stop_capture(&mut self) -> Result<(), String> {
         if !self.is_capturing {
             warn!("stop_capture called while not capturing");
             return Err("Not currently capturing".to_string());
@@ -177,15 +175,8 @@ impl OSXInputDevice {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool {
+    fn _is_capturing(&self) -> bool {
         self.is_capturing
-    }
-
-    fn get_cancel_token(&self) -> Option<CancellationToken> {
-        self.cancel_token.clone()
-    }
-    fn set_cancel_token(&mut self, token: Option<CancellationToken>) {
-        self.cancel_token = token;
     }
 
     /// Creates a Core Audio aggregate device description.
@@ -253,12 +244,4 @@ impl OSXInputDevice {
 
         Ok((agg_desc, tap))
     }
-}
-
-fn build_audio_converter(in_sample_rate: f64) -> AudioConverterRef {
-    let src_format = cidre::at::audio::StreamBasicDesc::common_f32(in_sample_rate, 2, false);
-    let dst_format = cidre::at::audio::StreamBasicDesc::common_f32(16000.0, 2, false);
-    let mut converter = AudioConverterRef::with_formats(&src_format, &dst_format).unwrap();
-    let _ = converter.set_codec_quality(Quality::MEDIUM).unwrap();
-    converter
 }

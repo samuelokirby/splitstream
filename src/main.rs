@@ -1,15 +1,11 @@
 use std::{
-    fs::File,
-    io::{self, Write},
+    io::{self},
     time::{Duration, Instant},
 };
 
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
 use opus::{Decoder, Encoder};
-use ringbuf::{
-    HeapRb,
-    traits::{Consumer, Observer, Producer, Split},
-};
+use ringbuf::traits::Consumer;
 use tokio::sync::mpsc;
 
 use crate::websocket_client::WebSocketClient;
@@ -187,11 +183,6 @@ fn build_encoder(in_sample_rate: u32) -> Encoder {
     encoder
 }
 
-fn frame_size(sample_rate: f64) -> usize {
-    const FRAME_MS: f64 = 20.0;
-    ((sample_rate * FRAME_MS) / 1000.0).round() as usize
-}
-
 fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Result<()> {
     let sample_rate = 16_000;
     let channels = opus::Channels::Stereo;
@@ -221,4 +212,9 @@ fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Resu
 
     let _ = writer.finalize();
     Ok(())
+}
+
+fn _frame_size(sample_rate: f64) -> usize {
+    const FRAME_MS: f64 = 20.0;
+    ((sample_rate * FRAME_MS) / 1000.0).round() as usize
 }
