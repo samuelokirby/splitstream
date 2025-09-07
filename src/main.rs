@@ -26,7 +26,8 @@ async fn main() {
         "Aggregate device initialized with {}hz nominal sample rate",
         dev.nominal_sample_rate
     );
-    let in_sample_rate = dev.nominal_sample_rate;
+    // let in_sample_rate = dev.nominal_sample_rate;
+    let in_sample_rate = 48_000;
     println!("Using input sample rate: {}", in_sample_rate);
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
     let mut resampler = build_resampler(in_sample_rate);
@@ -40,8 +41,6 @@ async fn main() {
     println!("Starting in three seconds...");
     std::thread::sleep(Duration::from_secs(3));
 
-    let rb = HeapRb::<f32>::new(4096);
-    let (mut resample_prod, mut resample_cons) = rb.split();
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
     let ws_client: WebSocketClient = WebSocketClient::new(
         "your_access_token".to_string(),
@@ -78,79 +77,73 @@ async fn main() {
         let mut sys_buffer = [0.0_f32; 512];
         let mic_read = mic_consumer.pop_slice(&mut mic_buffer);
         let sys_read = sys_consumer.pop_slice(&mut sys_buffer);
+
         if mic_read > 0 || sys_read > 0 {
-            println!(
-                "{:3} 🎙️ + {:3} 📣 = {:4} total",
-                mic_read,
-                sys_read,
-                mic_read + sys_read
-            );
-            input_buffers[0].extend_from_slice(&mic_buffer[..mic_read]);
-            input_buffers[1].extend_from_slice(&sys_buffer[..sys_read]);
+            // println!(
+            //     "{:3} 🎙️ + {:3} 📣 = {:4} total",
+            //     mic_read,
+            //     sys_read,
+            //     mic_read + sys_read
+            // );
+            if mic_read > 0 {
+                input_buffers[0].extend_from_slice(&mic_buffer[..mic_read]);
+            }
+            if sys_read > 0 {
+                input_buffers[1].extend_from_slice(&sys_buffer[..sys_read]);
+            }
         }
-        if mic_read > 0 {
-            input_buffers[0].extend_from_slice(&mic_buffer[..mic_read]);
-        }
-        if sys_read > 0 {
-            input_buffers[1].extend_from_slice(&sys_buffer[..sys_read]);
-        }
+
         let required_input = Resampler::input_frames_next(&resampler);
         if input_buffers[0].len() >= required_input && input_buffers[1].len() >= required_input {
-            // inputs: one slice per channel
             let wave_in = [
                 &input_buffers[0][..required_input],
                 &input_buffers[1][..required_input],
             ];
-
-            // outputs: one mutable slice per channel
-            let mut out_mic = [0.0_f32; 512];
-            let mut out_sys = [0.0_f32; 512];
+            let mut out_mic = [0.0_f32; 320]; // only need chunk_size
+            let mut out_sys = [0.0_f32; 320];
             let mut wave_out = [&mut out_mic[..], &mut out_sys[..]];
-
-            // mask: both channels active
             let active = [true, true];
 
-            let result = Resampler::process_into_buffer(
+            match Resampler::process_into_buffer(
                 &mut resampler,
                 &wave_in,
                 &mut wave_out,
                 Some(&active),
-            );
-            println!("Resample result: {:?}", result);
+            ) {
+                Ok((_used, produced)) => {
+                    // Remove consumed input
+                    input_buffers[0].drain(0..required_input);
+                    input_buffers[1].drain(0..required_input);
 
-            // Remove processed data
-            input_buffers[0].drain(0..required_input);
-            input_buffers[1].drain(0..required_input);
-
-            if let Ok(_) = result {
-                // Push resampled data to ring buffer
-                for &sample in out_mic.iter() {
-                    resample_prod.push_slice(&[sample]);
-                }
-                for &sample in out_sys.iter() {
-                    resample_prod.push_slice(&[sample]);
-                }
-
-                // Encode when enough data for a frame (e.g., 320 samples at 16kHz for ~20ms)
-                let frame_sz = frame_size(16_000.0);
-                if resample_cons.occupied_len() >= frame_sz * 2 {
-                    // Stereo
-                    let mut frame = vec![0.0_f32; frame_sz * 2];
-                    // Pop all required samples into the frame buffer
-                    let popped = resample_cons.pop_slice(&mut frame[..]);
-                    if popped == frame.len() {
-                        let mut encoded = vec![0u8; 512];
-                        let len = encoder.encode_float(&frame, &mut encoded).unwrap();
-                        println!("Encoded frame size: {}", len);
-                        let encoded = encoded[..len].to_vec();
-                        println!("{:#?}", encoded);
-                        opus_packets.push(encoded.clone());
-                        let _ = audio_tx.send(encoded);
+                    // Interleave produced samples
+                    let frame_len = produced; // 320
+                    let mut interleaved = Vec::<f32>::with_capacity(frame_len * 2);
+                    for i in 0..frame_len {
+                        interleaved.push(out_mic[i]);
+                        interleaved.push(out_sys[i]);
                     }
+
+                    // Encode (Opus expects interleaved stereo)
+                    let mut encoded = vec![0u8; 400]; // enough for 20ms @ low bitrate
+                    let packet_len = encoder
+                        .encode_float(&interleaved, &mut encoded)
+                        .expect("Opus encode failed");
+                    encoded.truncate(packet_len);
+                    // println!("Encoded frame size: {}", packet_len);
+
+                    opus_packets.push(encoded.clone());
+                    let _ = audio_tx.send(encoded);
+                }
+                Err(e) => {
+                    eprintln!("Resample error: {e:?}");
+                    // If recoverable, consider dropping some input or clearing buffers
+                    input_buffers[0].clear();
+                    input_buffers[1].clear();
                 }
             }
         }
-        if now.elapsed() > Duration::from_secs(10) {
+
+        if now.elapsed() > Duration::from_secs(60) {
             if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
                 eprintln!("Failed to write raw Opus: {}", e);
             }
@@ -219,13 +212,13 @@ fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Resu
         match decoder.decode(packet, &mut decoded_buf, false) {
             Ok(num_samples) => {
                 for sample in &decoded_buf[..num_samples * 2] {
-                    writer.write_sample(*sample);
+                    let _ = writer.write_sample(*sample);
                 }
             }
             Err(err) => eprintln!("Decode error: {:?}", err),
         }
     }
 
-    writer.finalize();
+    let _ = writer.finalize();
     Ok(())
 }

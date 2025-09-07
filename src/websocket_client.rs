@@ -38,8 +38,7 @@ impl WebSocketClient {
                     continue;
                 }
                 if let Err(e) = ws_sender.send(Message::Binary(encoded_frame.into())).await {
-                    eprintln!("Failed to send audio frame: {e}");
-                    break;
+                    panic!("Failed to transmit audio frame over websocket: {e}");
                 }
             }
         });
