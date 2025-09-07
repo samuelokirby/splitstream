@@ -1,9 +1,9 @@
-use std::{fs::File, time::Duration};
+use std::time::Duration;
 
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
 use opus::Encoder;
 use ringbuf::{
-    HeapRb, SharedRb,
+    HeapRb,
     traits::{Consumer, Observer, Producer, Split},
 };
 
@@ -13,7 +13,8 @@ pub mod audio_input_buffers;
 pub mod macos_device;
 pub mod websocket_client;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
     println!(
         "Aggregate device initialized with {}hz nominal sample rate",
@@ -39,6 +40,7 @@ fn main() {
         "your_access_token".to_string(),
         "ws://localhost:8080/audio/stream".to_string(),
     );
+
     loop {
         // 1. Read from aggregate device ring buffers
         let mut mic_buffer = [0.0_f32; 512];
