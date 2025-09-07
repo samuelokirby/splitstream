@@ -34,8 +34,12 @@ async fn main() {
         "Next input frame size: {}",
         Resampler::input_frames_next(&resampler)
     );
-    println!("Starting in three seconds...");
-    std::thread::sleep(Duration::from_secs(3));
+    println!("Starting in 3...");
+    std::thread::sleep(Duration::from_secs(1));
+    println!("2...");
+    std::thread::sleep(Duration::from_secs(1));
+    println!("1...");
+    std::thread::sleep(Duration::from_secs(1));
 
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
     let ws_client: WebSocketClient = WebSocketClient::new(
@@ -48,7 +52,6 @@ async fn main() {
 
     // Spawn a task to handle WebSocket transmission (sends audio frames as they arrive)
     tokio::spawn(async move {
-        println!("SENT TO WEBSOCKET");
         if let Err(e) = ws_client
             .transmit_audio_frames(audio_rx, transcript_tx)
             .await
@@ -139,10 +142,11 @@ async fn main() {
             }
         }
 
-        if now.elapsed() > Duration::from_secs(60) {
+        if now.elapsed() > Duration::from_secs(5) {
             if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
                 eprintln!("Failed to write raw Opus: {}", e);
             }
+            println!("Ending sample rate: {}", dev.actual_sample_rate());
             break;
         }
     }
