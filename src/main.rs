@@ -3,12 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
+use chrono::Local;
+use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters, VecResampler};
 use opus::{Decoder, Encoder};
 use ringbuf::traits::Consumer;
 use tokio::sync::mpsc;
 
-use crate::websocket_client::WebSocketClient;
+use crate::{
+    coreaudio_listener::{AudioPropertyChange, CoreAudioListener},
+    websocket_client::WebSocketClient,
+};
 
 pub mod audio_input_buffers;
 pub mod coreaudio_listener;
@@ -19,11 +23,12 @@ pub mod websocket_client;
 async fn main() {
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (test_tx, mut test_rx) = mpsc::unbounded_channel::<String>();
-    let in_sample_rate = 16_000;
+    let (test_tx, mut test_rx) = mpsc::unbounded_channel::<AudioPropertyChange>();
+    let in_sample_rate = dev.nominal_sample_rate;
+
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
     let mut resampler = build_resampler(in_sample_rate);
-    let mut input_buffers = resampler.input_buffer_allocate(false);
+    let mut input_buffers = Resampler::input_buffer_allocate(&mut resampler, false);
 
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
     let ws_client: WebSocketClient = WebSocketClient::new(
@@ -53,9 +58,32 @@ async fn main() {
     });
 
     tokio::spawn(async move {
-        // if its been 10 seconds since the start of the thread, send a test message
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        let _ = test_tx.send("Test message from audio capture thread".to_string());
+        let mut ca_listener = CoreAudioListener::new();
+        let mut dev_change_rx = ca_listener.subscribe();
+        ca_listener.start();
+        // Listen for CoreAudio device change events
+        while let Ok(event) = dev_change_rx.recv().await {
+            println!(
+                "[{}] CoreAudio event \"{:?}\" received.",
+                Local::now()
+                    .format("%a %-I:%M%p")
+                    .to_string()
+                    .to_lowercase(),
+                event
+            );
+            // Handle full device swaps
+            match event {
+                AudioPropertyChange::DeviceIsAlive
+                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
+                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
+                    // Rebuild synchronously on the main task
+                    println!("Rebuilt CoreAudioListener");
+                    ca_listener.rebuild();
+                }
+                _ => {}
+            }
+            let _ = test_tx.send(event);
+        }
     });
 
     println!("Starting in 3...");
@@ -68,8 +96,16 @@ async fn main() {
     let now = Instant::now();
     loop {
         // Check for test messages
-        if let Ok(msg) = test_rx.try_recv() {
-            println!("Test emission received: {msg} - restarting capture");
+        if let Ok(event) = test_rx.try_recv() {
+            match event {
+                AudioPropertyChange::ActualSampleRate { hz } => {
+                    println!("Nominal sample rate changed to {}", hz);
+                    Resampler::set_resample_ratio(&mut resampler, 16_000.0 / hz as f64, false)
+                        .unwrap();
+                }
+                _ => {}
+            }
+            println!("{:?}", event);
             if let Err(e) = dev.stop_capture() {
                 eprintln!("Failed to stop capture: {e:?}");
             }
@@ -85,7 +121,8 @@ async fn main() {
                             input_buffers[0].clear();
                             input_buffers[1].clear();
                             println!("Capture successfully restarted");
-                            if let Err(e) = resampler.set_resample_ratio(
+                            if let Err(e) = Resampler::set_resample_ratio(
+                                &mut resampler,
                                 16_000.0 / dev.nominal_sample_rate as f64,
                                 false,
                             ) {
@@ -172,14 +209,6 @@ async fn main() {
                 }
             }
         }
-
-        if now.elapsed() > Duration::from_secs(60) {
-            if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
-                eprintln!("Failed to write raw Opus: {}", e);
-            }
-            // println!("Ending sample rate: {}", dev.actual_sample_rate());
-            break;
-        }
     }
 
     // After the loop, write raw Opus packets to file
@@ -248,6 +277,8 @@ fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Resu
     let _ = writer.finalize();
     Ok(())
 }
+
+fn handle_
 
 fn _frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
