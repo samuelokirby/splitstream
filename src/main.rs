@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 use crate::websocket_client::WebSocketClient;
 
 pub mod audio_input_buffers;
+pub mod coreaudio_listener;
 pub mod macos_device;
 pub mod websocket_client;
 
@@ -146,7 +147,7 @@ async fn main() {
             if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
                 eprintln!("Failed to write raw Opus: {}", e);
             }
-            println!("Ending sample rate: {}", dev.actual_sample_rate());
+            // println!("Ending sample rate: {}", dev.actual_sample_rate());
             break;
         }
     }
