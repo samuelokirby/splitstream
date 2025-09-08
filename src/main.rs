@@ -19,28 +19,11 @@ pub mod websocket_client;
 async fn main() {
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    println!(
-        "Aggregate device initialized with {}hz nominal sample rate",
-        dev.nominal_sample_rate
-    );
-    // let in_sample_rate = dev.nominal_sample_rate;
-    let in_sample_rate = 48_000;
-    println!("Using input sample rate: {}", in_sample_rate);
+    let (test_tx, mut test_rx) = mpsc::unbounded_channel::<String>();
+    let in_sample_rate = 16_000;
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
     let mut resampler = build_resampler(in_sample_rate);
     let mut input_buffers = resampler.input_buffer_allocate(false);
-
-    println!("Resampler channels: {}", resampler.nbr_channels());
-    println!(
-        "Next input frame size: {}",
-        Resampler::input_frames_next(&resampler)
-    );
-    println!("Starting in 3...");
-    std::thread::sleep(Duration::from_secs(1));
-    println!("2...");
-    std::thread::sleep(Duration::from_secs(1));
-    println!("1...");
-    std::thread::sleep(Duration::from_secs(1));
 
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
     let ws_client: WebSocketClient = WebSocketClient::new(
@@ -69,9 +52,56 @@ async fn main() {
         }
     });
 
+    tokio::spawn(async move {
+        // if its been 10 seconds since the start of the thread, send a test message
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let _ = test_tx.send("Test message from audio capture thread".to_string());
+    });
+
+    println!("Starting in 3...");
+    std::thread::sleep(Duration::from_secs(1));
+    println!("2...");
+    std::thread::sleep(Duration::from_secs(1));
+    println!("1...");
+    std::thread::sleep(Duration::from_secs(1));
     let mut opus_packets = Vec::new();
     let now = Instant::now();
     loop {
+        // Check for test messages
+        if let Ok(msg) = test_rx.try_recv() {
+            println!("Test emission received: {msg} - restarting capture");
+            if let Err(e) = dev.stop_capture() {
+                eprintln!("Failed to stop capture: {e:?}");
+            }
+            match macos_device::OSXInputDevice::new() {
+                Ok(new_dev) => {
+                    println!("New sample rate: {}", new_dev.nominal_sample_rate);
+                    dev = new_dev;
+                    match dev.start_capture() {
+                        Ok((new_mic_consumer, new_sys_consumer)) => {
+                            mic_consumer = new_mic_consumer;
+                            sys_consumer = new_sys_consumer;
+                            // Optional: clear any leftover buffered samples so timing stays aligned
+                            input_buffers[0].clear();
+                            input_buffers[1].clear();
+                            println!("Capture successfully restarted");
+                            if let Err(e) = resampler.set_resample_ratio(
+                                16_000.0 / dev.nominal_sample_rate as f64,
+                                false,
+                            ) {
+                                eprintln!("Failed to update resample ratio: {e:?}");
+                            }
+                            println!(
+                                "Resample ratio set to {:.6}",
+                                16_000.0 / dev.nominal_sample_rate as f64
+                            );
+                        }
+                        Err(e) => eprintln!("Failed to start capture: {e:?}"),
+                    }
+                }
+                Err(e) => eprintln!("Failed to create new input device: {e:?}"),
+            }
+        }
         // 1. Read from aggregate device ring buffers
         let mut mic_buffer = [0.0_f32; 512];
         let mut sys_buffer = [0.0_f32; 512];
@@ -143,7 +173,7 @@ async fn main() {
             }
         }
 
-        if now.elapsed() > Duration::from_secs(5) {
+        if now.elapsed() > Duration::from_secs(60) {
             if let Err(e) = decode_and_write_wav(&opus_packets.clone(), "output.wav") {
                 eprintln!("Failed to write raw Opus: {}", e);
             }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = "0.4.42"
 cidre = { git = "https://github.com/yury/cidre", rev = "a5ce94f2600f096b13a8eefde1dbbce9dff89064" }
 coreaudio-sys = "0.2.17"
 fixed-resample = "0.9.1"

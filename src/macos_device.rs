@@ -153,7 +153,7 @@ impl OSXInputDevice {
         Ok((mic_consumer, sys_consumer))
     }
 
-    fn _stop_capture(&mut self) -> Result<(), String> {
+    pub fn stop_capture(&mut self) -> Result<(), String> {
         if !self.is_capturing {
             warn!("stop_capture called while not capturing");
             return Err("Not currently capturing".to_string());
