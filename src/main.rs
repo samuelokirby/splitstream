@@ -327,3 +327,107 @@ fn _frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
     ((sample_rate * FRAME_MS) / 1000.0).round() as usize
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_frame_size_common_rates() {
+        assert_eq!(_frame_size(16_000.0), 320);
+        assert_eq!(_frame_size(48_000.0), 960);
+        assert_eq!(_frame_size(44_100.0), 882);
+        assert_eq!(_frame_size(22_050.0), 441);
+    }
+
+    #[test]
+    fn test_build_resampler_and_required_input_positive() {
+        let resampler = build_resampler(48_000);
+        let required = Resampler::input_frames_next(&resampler);
+        assert!(required > 0);
+    }
+
+    #[test]
+    fn test_resampler_processes_silence_and_outputs_320() {
+        let mut resampler = build_resampler(48_000);
+        let required = Resampler::input_frames_next(&resampler);
+
+        // Two channels of silence input
+        let ch0 = vec![0.0_f32; required];
+        let ch1 = vec![0.0_f32; required];
+        let wave_in = [&ch0[..], &ch1[..]];
+
+        // FixedOut is configured for 320 output frames
+        let mut out_mic = [0.0_f32; 320];
+        let mut out_sys = [0.0_f32; 320];
+        let mut wave_out = [&mut out_mic[..], &mut out_sys[..]];
+        let active = [true, true];
+
+        let (_used, produced) =
+            Resampler::process_into_buffer(&mut resampler, &wave_in, &mut wave_out, Some(&active))
+                .expect("resample should succeed");
+
+        assert_eq!(produced, 320);
+        assert!(out_mic.iter().all(|v| v.abs() < 1e-6));
+        assert!(out_sys.iter().all(|v| v.abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_change_resampler_in_rate_changes_required_input() {
+        let mut resampler = build_resampler(48_000);
+        let req_48k = Resampler::input_frames_next(&resampler);
+
+        change_resampler_in_rate(&mut resampler, 44_100).expect("ratio change ok");
+        let req_44k = Resampler::input_frames_next(&resampler);
+
+        // For fixed output of 320 frames, higher ratio (16000/44100) requires fewer input samples than 16000/48000.
+        assert!(
+            req_44k < req_48k,
+            "expected required input to decrease after 48k->44.1k change"
+        );
+    }
+
+    #[test]
+    fn test_change_resampler_in_rate_zero_is_error() {
+        let mut resampler = build_resampler(48_000);
+        let res = change_resampler_in_rate(&mut resampler, 0);
+        assert!(res.is_err(), "expected error when new_in_rate is zero");
+    }
+
+    #[test]
+    fn test_encoder_create_and_encode_silence() {
+        // 20ms stereo frame at 16 kHz = 320 frames per ch, interleaved floats
+        let mut enc = build_encoder(16_000);
+        let mut packet = vec![0u8; 400];
+
+        let mut interleaved = vec![0.0_f32; 320 * 2];
+        let len = enc
+            .encode_float(&interleaved, &mut packet)
+            .expect("encode ok");
+        assert!(len > 0, "encoded packet should be non-empty");
+        packet.truncate(len);
+
+        // Decode back to PCM i16 to validate basic round-trip
+        let mut dec = Decoder::new(16_000, opus::Channels::Stereo).expect("decoder ok");
+        let mut pcm = vec![0i16; 320 * 2];
+        let samples = dec.decode(&packet, &mut pcm, false).expect("decode ok");
+        assert_eq!(
+            samples, 320,
+            "expected 20ms @ 16kHz = 320 samples per channel"
+        );
+    }
+
+    #[test]
+    fn test_resampler_input_buffer_allocate_and_fill() {
+        let mut resampler = build_resampler(48_000);
+        let mut bufs = Resampler::input_buffer_allocate(&mut resampler, false);
+        assert_eq!(bufs.len(), 2);
+        assert!(bufs[0].is_empty() && bufs[1].is_empty());
+
+        // Push some samples and ensure lengths update
+        bufs[0].extend_from_slice(&[1.0_f32; 10]);
+        bufs[1].extend_from_slice(&[2.0_f32; 5]);
+        assert_eq!(bufs[0].len(), 10);
+        assert_eq!(bufs[1].len(), 5);
+    }
+}
