@@ -1,7 +1,7 @@
 use chrono::Local;
 use colored::*;
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
-use log::debug;
+use log::{debug, info};
 use opus::{Decoder, Encoder};
 use ringbuf::traits::Consumer;
 use std::{
@@ -96,7 +96,7 @@ async fn main() {
             sleep(Duration::from_millis(500));
             match macos_device::OSXInputDevice::new() {
                 Ok(new_dev) => {
-                    println!(
+                    info!(
                         "Switching clock device to new {}hz device",
                         new_dev.nominal_sample_rate
                     );
