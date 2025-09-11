@@ -162,9 +162,8 @@ impl OSXInputDevice {
         debug!("Stopping capture...");
 
         if let Some(started_device) = self.started_device.take() {
-            println!("Devices before dropping...");
+            debug!("Dropping CoreAudio device");
             drop(started_device);
-            debug!("Core Audio device stopped");
         }
 
         // Drop the context to avoid dangling pointers
