@@ -58,7 +58,7 @@ async fn main() {
     // Spawn a task to handle WebSocket transmission (sends audio frames as they arrive)
     // combines everything to be able to use transmit_audio_frames
     create_websocket_task(ws_client, opus_packet_rx, transcript_tx);
-    // Spawn a task to handle incoming transcripts (prints them as they arrive)
+    // Spawn a task to handle incoming transcripts (prints back to stdout as they arrive)
     create_transcript_stdout_task(transcript_rx);
 
     println!("Starting in 3...");
