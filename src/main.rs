@@ -1,29 +1,65 @@
+use chrono::Local;
+use colored::*;
+use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters, VecResampler};
+use log::debug;
+use opus::{Decoder, Encoder};
+use ringbuf::traits::Consumer;
+use serde_json::Value;
 use std::{
     io::{self},
     time::{Duration, Instant},
 };
-
-use chrono::Local;
-use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters, VecResampler};
-use opus::{Decoder, Encoder};
-use ringbuf::traits::Consumer;
 use tokio::sync::mpsc;
 
 use crate::{
     coreaudio_listener::{AudioPropertyChange, CoreAudioListener},
+    transcript_msg::TranscriptMessage,
     websocket_client::WebSocketClient,
 };
 
 pub mod audio_input_buffers;
 pub mod coreaudio_listener;
 pub mod macos_device;
+pub mod transcript_msg;
 pub mod websocket_client;
 
 #[tokio::main]
 async fn main() {
+    print_splitstream_demo_msg();
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (test_tx, mut test_rx) = mpsc::unbounded_channel::<AudioPropertyChange>();
+
+    tokio::spawn(async move {
+        let mut ca_listener = CoreAudioListener::new();
+        let mut dev_change_rx = ca_listener.subscribe();
+        ca_listener.start();
+        // Listen for CoreAudio device change events
+        while let Ok(event) = dev_change_rx.recv().await {
+            // println!(
+            //     "[{}] CoreAudio event \"{:?}\" received.",
+            //     Local::now()
+            //         .format("%a %-I:%M%p")
+            //         .to_string()
+            //         .to_lowercase(),
+            //     event
+            // );
+            // Handle full device swaps
+            match event {
+                AudioPropertyChange::DeviceIsAlive
+                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
+                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
+                    // Wait a moment for the system to stabilize
+                    std::thread::sleep(Duration::from_millis(500));
+                    // Rebuild synchronously on the main task
+                    ca_listener.rebuild();
+                }
+                _ => {}
+            }
+            let _ = test_tx.send(event);
+        }
+    });
+
     let in_sample_rate = dev.nominal_sample_rate;
 
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
@@ -33,7 +69,8 @@ async fn main() {
     let mut encoder = build_encoder(16_000); // Encode at 16kHz
     let ws_client: WebSocketClient = WebSocketClient::new(
         "your_access_token".to_string(),
-        "ws://localhost:8080/audio/stream".to_string(),
+        "wss://secretary-backend-649765884774.us-east4.run.app/audio/stream".to_string(),
+        // "ws://localhost:8080/audio/stream".to_string(),
     );
 
     // Add channels for transcripts (to receive from the WebSocket server)
@@ -53,36 +90,24 @@ async fn main() {
     let mut transcript_rx = transcript_rx;
     tokio::spawn(async move {
         while let Some(transcript) = transcript_rx.recv().await {
-            println!("Received transcript: {}", transcript);
-        }
-    });
+            let v: TranscriptMessage =
+                serde_json::from_str::<TranscriptMessage>(&transcript).unwrap();
 
-    tokio::spawn(async move {
-        let mut ca_listener = CoreAudioListener::new();
-        let mut dev_change_rx = ca_listener.subscribe();
-        ca_listener.start();
-        // Listen for CoreAudio device change events
-        while let Ok(event) = dev_change_rx.recv().await {
-            println!(
-                "[{}] CoreAudio event \"{:?}\" received.",
-                Local::now()
-                    .format("%a %-I:%M%p")
-                    .to_string()
-                    .to_lowercase(),
-                event
-            );
-            // Handle full device swaps
-            match event {
-                AudioPropertyChange::DeviceIsAlive
-                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
-                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
-                    // Rebuild synchronously on the main task
-                    println!("Rebuilt CoreAudioListener");
-                    ca_listener.rebuild();
-                }
-                _ => {}
+            // Base text
+            let mut text = v.text.clone();
+
+            // If final, color it dark green
+            if v.is_final {
+                text = text.green().bold().to_string();
+                // you can also pick a darker RGB shade:
+                // text = text.truecolor(0, 100, 0).to_string();
             }
-            let _ = test_tx.send(event);
+
+            if v.channel == "microphone" {
+                println!("🎙️(mic)\t{}", text.white());
+            } else {
+                println!("🔊(sys) {}", text.bright_black());
+            }
         }
     });
 
@@ -93,25 +118,32 @@ async fn main() {
     println!("1...");
     std::thread::sleep(Duration::from_secs(1));
     let mut opus_packets = Vec::new();
-    let now = Instant::now();
+
+    let confirm_msg = format!("✅ Recording. Press Ctrl+C to stop.")
+        .green()
+        .bold();
+    println!("{}", confirm_msg);
     loop {
         // Check for test messages
         if let Ok(event) = test_rx.try_recv() {
             match event {
                 AudioPropertyChange::ActualSampleRate { hz } => {
-                    println!("Nominal sample rate changed to {}", hz);
-                    Resampler::set_resample_ratio(&mut resampler, 16_000.0 / hz as f64, false)
-                        .unwrap();
+                    debug!("Nominal sample rate changed to {}", hz);
+                    change_resampler_in_rate(&mut resampler, hz).unwrap();
                 }
                 _ => {}
             }
-            println!("{:?}", event);
+            debug!("CoreAudio Event: {:?}", event);
             if let Err(e) = dev.stop_capture() {
                 eprintln!("Failed to stop capture: {e:?}");
             }
+            std::thread::sleep(Duration::from_millis(500));
             match macos_device::OSXInputDevice::new() {
                 Ok(new_dev) => {
-                    println!("New sample rate: {}", new_dev.nominal_sample_rate);
+                    println!(
+                        "Switching clock device to new {}hz device",
+                        new_dev.nominal_sample_rate
+                    );
                     dev = new_dev;
                     match dev.start_capture() {
                         Ok((new_mic_consumer, new_sys_consumer)) => {
@@ -120,18 +152,8 @@ async fn main() {
                             // Optional: clear any leftover buffered samples so timing stays aligned
                             input_buffers[0].clear();
                             input_buffers[1].clear();
-                            println!("Capture successfully restarted");
-                            if let Err(e) = Resampler::set_resample_ratio(
-                                &mut resampler,
-                                16_000.0 / dev.nominal_sample_rate as f64,
-                                false,
-                            ) {
-                                eprintln!("Failed to update resample ratio: {e:?}");
-                            }
-                            println!(
-                                "Resample ratio set to {:.6}",
-                                16_000.0 / dev.nominal_sample_rate as f64
-                            );
+                            let hz = dev.nominal_sample_rate;
+                            change_resampler_in_rate(&mut resampler, hz).unwrap();
                         }
                         Err(e) => eprintln!("Failed to start capture: {e:?}"),
                     }
@@ -278,7 +300,28 @@ fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Resu
     Ok(())
 }
 
-fn handle_
+fn print_splitstream_demo_msg() {
+    let banner = "
+███████╗██████╗ ██╗     ██╗████████╗███████╗████████╗██████╗ ███████╗ █████╗ ███╗   ███╗
+██╔════╝██╔══██╗██║     ██║╚══██╔══╝██╔════╝╚══██╔══╝██╔══██╗██╔════╝██╔══██╗████╗ ████║
+███████╗██████╔╝██║     ██║   ██║   ███████╗   ██║   ██████╔╝█████╗  ███████║██╔████╔██║
+╚════██║██╔═══╝ ██║     ██║   ██║   ╚════██║   ██║   ██╔══██╗██╔══╝  ██╔══██║██║╚██╔╝██║
+███████║██║     ███████╗██║   ██║   ███████║   ██║   ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║
+╚══════╝╚═╝     ╚══════╝╚═╝   ╚═╝   ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝
+
+    ";
+    println!("\n\n{}", banner.bright_blue());
+    println!("\t\tDemo");
+    println!("\t\t© Secretary Corporation 2024-2025, all rights reserved.")
+}
+
+fn change_resampler_in_rate(
+    resampler: &mut SincFixedOut<f32>,
+    new_in_rate: u32,
+) -> Result<(), fixed_resample::rubato::ResampleError> {
+    let new_ratio = 16_000.0 / new_in_rate as f64;
+    Resampler::set_resample_ratio(resampler, new_ratio, false)
+}
 
 fn _frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
