@@ -309,3 +309,169 @@ fn get_property_address(
         mElement: element,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coreaudio_sys::{
+        kAudioDevicePropertyActualSampleRate, kAudioDevicePropertyDeviceIsAlive,
+        kAudioDevicePropertyNominalSampleRate, kAudioHardwarePropertyDefaultInputDevice,
+        kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyElementMaster,
+        kAudioObjectPropertyScopeGlobal,
+    };
+
+    #[test]
+    fn test_get_property_address_builds_expected_struct() {
+        let addr = get_property_address(
+            kAudioDevicePropertyActualSampleRate,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMaster,
+        );
+        assert_eq!(addr.mSelector, kAudioDevicePropertyActualSampleRate);
+        assert_eq!(addr.mScope, kAudioObjectPropertyScopeGlobal);
+        assert_eq!(addr.mElement, kAudioObjectPropertyElementMaster);
+
+        let hw_addr = get_property_address(
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+            kAudioObjectPropertyElementMaster,
+        );
+        assert_eq!(hw_addr.mSelector, kAudioHardwarePropertyDefaultOutputDevice);
+        assert_eq!(hw_addr.mScope, kAudioObjectPropertyScopeGlobal);
+        assert_eq!(hw_addr.mElement, kAudioObjectPropertyElementMaster);
+    }
+
+    #[test]
+    fn test_property_selector_lists_non_empty_and_contains_expected() {
+        assert!(!PROPERTY_SELECTORS.is_empty());
+        assert!(PROPERTY_SELECTORS.contains(&kAudioDevicePropertyActualSampleRate));
+        assert!(PROPERTY_SELECTORS.contains(&kAudioDevicePropertyNominalSampleRate));
+        assert!(PROPERTY_SELECTORS.contains(&kAudioDevicePropertyDeviceIsAlive));
+
+        assert!(!HARDWARE_SELECTORS.is_empty());
+        assert!(HARDWARE_SELECTORS.contains(&kAudioHardwarePropertyDefaultInputDevice));
+        assert!(HARDWARE_SELECTORS.contains(&kAudioHardwarePropertyDefaultOutputDevice));
+    }
+
+    #[test]
+    fn test_audio_property_change_equality_and_clone() {
+        let a1 = AudioPropertyChange::ActualSampleRate { hz: 48_000 };
+        let a2 = AudioPropertyChange::ActualSampleRate { hz: 48_000 };
+        let a3 = AudioPropertyChange::ActualSampleRate { hz: 44_100 };
+        assert_eq!(a1, a2);
+        assert_ne!(a1, a3);
+
+        let n1 = AudioPropertyChange::NominalSampleRate { hz: 16_000 };
+        let n2 = n1.clone();
+        assert_eq!(n1, n2);
+
+        let d1 = AudioPropertyChange::DeviceIsAlive;
+        let d2 = AudioPropertyChange::DeviceIsAlive;
+        assert_eq!(d1, d2);
+
+        let hi1 = AudioPropertyChange::HardwareDefaultInputDevice { id: 1, hz: 48_000 };
+        let hi2 = AudioPropertyChange::HardwareDefaultInputDevice { id: 1, hz: 48_000 };
+        let hi3 = AudioPropertyChange::HardwareDefaultInputDevice { id: 2, hz: 48_000 };
+        assert_eq!(hi1, hi2);
+        assert_ne!(hi1, hi3);
+        let ho1 = AudioPropertyChange::HardwareDefaultOutputDevice { id: 10, hz: 44_100 };
+        let ho2 = AudioPropertyChange::HardwareDefaultOutputDevice { id: 10, hz: 44_100 };
+        let ho3 = AudioPropertyChange::HardwareDefaultOutputDevice { id: 10, hz: 48_000 };
+        assert_eq!(ho1, ho2);
+        assert_ne!(ho1, ho3);
+
+        assert_ne!(AudioPropertyChange::Unknown, ho1);
+    }
+
+    #[test]
+    fn test_sendptr_roundtrip_pointer_identity_and_drop_safety() {
+        let b = Box::new(123_u32);
+        let raw = Box::into_raw(b);
+        let sp = SendPtr::new(raw);
+        assert_eq!(sp.as_ptr(), raw);
+        // Reconstruct and drop exactly once to avoid leaks
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+    }
+
+    // Helper used to assert that we drop exactly once, even with multiple wrappers/threads.
+    struct DropProbe {
+        ctr: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.ctr.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn test_sendptr_dropping_wrapper_does_not_free_underlying() {
+        let raw = Box::into_raw(Box::new(7_u32));
+        let sp = SendPtr::new(raw);
+        // Dropping the wrapper must not free the pointee.
+        drop(sp);
+        unsafe {
+            assert_eq!(*raw, 7_u32);
+            drop(Box::from_raw(raw)); // now free exactly once
+        }
+    }
+
+    #[test]
+    fn test_sendptr_drop_exactly_once_with_probe() {
+        let ctr = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let raw = Box::into_raw(Box::new(DropProbe { ctr: ctr.clone() }));
+        let sp = SendPtr::new(raw);
+        assert_eq!(sp.as_ptr(), raw);
+
+        // Free exactly once
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+        assert_eq!(ctr.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_sendptr_can_move_across_threads_and_free_elsewhere() {
+        let ctr = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let raw = Box::into_raw(Box::new(DropProbe { ctr: ctr.clone() }));
+        let sp = SendPtr::new(raw);
+
+        let handle = std::thread::spawn(move || {
+            let ptr = sp.as_ptr();
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
+        });
+        handle.join().unwrap();
+
+        assert_eq!(ctr.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_sendptr_multiple_wrappers_same_ptr_drop_once() {
+        let ctr = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let raw = Box::into_raw(Box::new(DropProbe { ctr: ctr.clone() }));
+
+        let sp1 = SendPtr::new(raw);
+        let sp2 = SendPtr::new(raw);
+
+        // Dropping wrappers should not drop the pointee.
+        drop(sp1);
+        drop(sp2);
+
+        // Single, explicit drop of the pointee.
+        unsafe {
+            drop(Box::from_raw(raw));
+        }
+
+        assert_eq!(ctr.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_sendptr_is_send_bound() {
+        // Compile-time assertion that SendPtr<ListenerClientData> is Send
+        fn assert_send<T: Send>() {}
+        assert_send::<SendPtr<ListenerClientData>>();
+    }
+}
