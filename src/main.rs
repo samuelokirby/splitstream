@@ -1,15 +1,14 @@
 use chrono::Local;
 use colored::*;
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
-use log::{debug, info};
+use log::{debug, info, trace};
 use opus::{Decoder, Encoder};
 use ringbuf::traits::Consumer;
 use std::{
     io::{self},
-    thread::sleep,
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::yield_now, time::sleep};
 
 use crate::{
     coreaudio_listener::{AudioPropertyChange, CoreAudioListener},
@@ -65,11 +64,11 @@ async fn main() {
     create_transcript_stdout_task(transcript_rx);
 
     println!("Starting in 3...");
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1)).await;
     println!("2...");
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1)).await;
     println!("1...");
-    sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1)).await;
 
     let mut opus_packets = Vec::new();
     let confirm_msg = format!("✅ Recording. Press Ctrl+C to stop.")
@@ -79,23 +78,46 @@ async fn main() {
 
     let mut encoder = build_encoder(OUT_SAMPLE_RATE); // Encode at 16kHz
     loop {
+        // This is here to avoid busy-waiting if there's nothing to do.
+        let mut will_busyspin = true;
         // Start by checking for any CoreAudio events to handle device updates
+
+        // If there's an event...
         if let Ok(event) = ca_rx.try_recv() {
             // Handle events depending on the type of AudioPropertyChange
             match event {
+                // If the sample rate changed, update the resampler and don't
+                // rebuild the device.
                 AudioPropertyChange::ActualSampleRate { hz } => {
+                    debug!("Actual sample rate changed to {}", hz);
+                    change_resampler_in_rate(&mut resampler, hz).unwrap();
+                }
+                AudioPropertyChange::NominalSampleRate { hz } => {
                     debug!("Nominal sample rate changed to {}", hz);
                     change_resampler_in_rate(&mut resampler, hz).unwrap();
                 }
+                // But if the device died or the default input/output device changed,
+                // we rebuild the aggregate device, so we stop capture.
+                AudioPropertyChange::DeviceIsAlive
+                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
+                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
+                    debug!("CoreAudio device change detected: {:?}", event);
+                    if let Err(e) = dev.stop_capture() {
+                        eprintln!("Failed to stop capture: {e:?}");
+                    }
+                    debug!("CoreAudio Event: {:?}", event);
+                }
                 _ => {}
             }
-            debug!("CoreAudio Event: {:?}", event);
-            if let Err(e) = dev.stop_capture() {
-                eprintln!("Failed to stop capture: {e:?}");
-            }
-            sleep(Duration::from_millis(500));
+
+            // Give the system a moment to stabilize
+            sleep(Duration::from_millis(500)).await;
+            // Right now, we create a new aggregate device on any of the above events.
+            // (In the future, we could be smarter and just update the existing device
+            // if the input/output devices are still alive.)
             match macos_device::OSXInputDevice::new() {
                 Ok(new_dev) => {
+                    info!("Creating new aggregate device after CoreAudio event");
                     info!(
                         "Switching clock device to new {}hz device",
                         new_dev.nominal_sample_rate
@@ -117,34 +139,52 @@ async fn main() {
                 Err(e) => eprintln!("Failed to create new input device: {e:?}"),
             }
         }
-        // 1. Read from aggregate device ring buffers
+
+        // By now, we have a valid mic_consumer and sys_consumer from the current aggregate device.
+        // We can read from their ring buffers, resample, encode, and send.
+
+        // 1. Read from aggregate device's ring buffers
         let mut mic_buffer = [0.0_f32; 512];
         let mut sys_buffer = [0.0_f32; 512];
         let mic_read = mic_consumer.pop_slice(&mut mic_buffer);
         let sys_read = sys_consumer.pop_slice(&mut sys_buffer);
 
+        // If either channel has data, append samples to per-channel input buffers
         if mic_read > 0 || sys_read > 0 {
-            // println!(
-            //     "{:3} 🎙️ + {:3} 📣 = {:4} total",
-            //     mic_read,
-            //     sys_read,
-            //     mic_read + sys_read
-            // );
+            trace!(
+                "{:3} 🎙️ + {:3} 📣 = {:4} total",
+                mic_read,
+                sys_read,
+                mic_read + sys_read
+            );
+            // Append to the mic channel (0) and sys channel (1) input buffers
             if mic_read > 0 {
                 input_buffers[0].extend_from_slice(&mic_buffer[..mic_read]);
             }
             if sys_read > 0 {
                 input_buffers[1].extend_from_slice(&sys_buffer[..sys_read]);
             }
+            will_busyspin = false; // We did work, so don't busyspin
         }
 
-        let required_input = Resampler::input_frames_next(&resampler);
+        // 2. Resample if we have enough input samples for the next output chunk
+
+        // We determine if we have enough input samples by using the resampler's
+        // `input_frames_next` method, which tells us how many input frames are needed
+        // to produce the next fixed output chunk (320 frames at 16kHz) for a single
+        // channel (but we need it for both channels).
+        let required_input = Resampler::input_frames_next(&resampler); // I think this is always 320
+
+        // If we have enough input samples for both channels, we can resample
         if input_buffers[0].len() >= required_input && input_buffers[1].len() >= required_input {
             let wave_in = [
                 &input_buffers[0][..required_input],
                 &input_buffers[1][..required_input],
             ];
-            let mut out_mic = [0.0_f32; 320]; // only need chunk_size
+
+            // out_mic and out_sys are empty arrays that will be filled later by the resampler's
+            // audio output for each channel. It starts with zeroed buffers.
+            let mut out_mic = [0.0_f32; 320];
             let mut out_sys = [0.0_f32; 320];
             let mut wave_out = [&mut out_mic[..], &mut out_sys[..]];
             let active = [true, true];
@@ -156,26 +196,33 @@ async fn main() {
                 Some(&active),
             ) {
                 Ok((_used, produced)) => {
-                    // Remove consumed input
+                    // Remove consumed input, only removes enough to fill a 20ms 16khz frame (320 samples)
                     input_buffers[0].drain(0..required_input);
                     input_buffers[1].drain(0..required_input);
 
                     // Interleave produced samples
-                    let frame_len = produced; // 320
+
+                    // Produced is usually 320, but the reason why we don't assume that is
+                    // is because the rubato resampler can produce variable output sizes
+                    // This is handled for us through rubato's `input_buffer_allocate`.
+                    let frame_len = produced;
                     let mut interleaved = Vec::<f32>::with_capacity(frame_len * 2);
                     for i in 0..frame_len {
                         interleaved.push(out_mic[i]);
                         interleaved.push(out_sys[i]);
                     }
 
-                    // Encode (Opus expects interleaved stereo)
-                    let mut encoded = vec![0u8; 400]; // enough for 20ms @ low bitrate
+                    // At this point, we have 2x 320 samples of 16khz interleaved float PCM audio
+                    // We can now encode this with Opus and send it to the WebSocket server
+                    let mut encoded = vec![0u8; 400]; // enough for 20ms @ low bitrate (this is an AI comment idk why its 400 but it works)
                     let packet_len = encoder
                         .encode_float(&interleaved, &mut encoded)
                         .expect("Opus encode failed");
                     encoded.truncate(packet_len);
                     // println!("Encoded frame size: {}", packet_len);
 
+                    // Store the Opus packet for later writing to a file
+                    // We don't do that right now but we could in the future.
                     opus_packets.push(encoded.clone());
                     let _ = opus_packet_tx.send(encoded);
                 }
@@ -187,24 +234,38 @@ async fn main() {
                 }
             }
         }
+        // If normally we would busyspin, yield to the tokio scheduler instead.
+        if will_busyspin {
+            // yield_now is a tokio method that yields to the scheduler
+            // allowing other tasks to run. This prevents busy-waiting
+            // and reduces CPU usage when there's nothing to do.
+            yield_now().await;
+        }
     }
-
-    // After the loop, write raw Opus packets to file
 }
 
+/// Builds and returns a SincFixedOut resampler to convert from `in_sample_rate` to `OUT_SAMPLE_RATE`.
+/// We chose FixedOut because we want a fixed output size for Opus encoding.
+/// Configured for fixed output of 320 frames (20ms @ 16kHz).
+///
+/// # Arguments
+/// * `in_sample_rate` - The input sample rate (e.g. the system's output device sample rate)
+/// # Returns
+/// * `SincFixedOut<f32>` - The configured resampler instance
 fn build_resampler(in_sample_rate: u32) -> SincFixedOut<f32> {
-    let out_sample_rate = OUT_SAMPLE_RATE;
-    let resample_ratio = out_sample_rate as f64 / in_sample_rate as f64; // e.g. 48000 / 44100 = 1.088435
+    let out_sample_rate = OUT_SAMPLE_RATE; // always 16,000hz for Opus and transmission
+    let resample_ratio = out_sample_rate as f64 / in_sample_rate as f64; // example: 48000 / 44100 = 1.088435
     let max_resample_ratio_relative = 3.1; // Allow for some variance in sample rate
 
     let parameters = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        oversampling_factor: 128,
-        interpolation: fixed_resample::rubato::SincInterpolationType::Linear,
-        window: fixed_resample::rubato::WindowFunction::BlackmanHarris2,
+        sinc_len: 256,            // docs says 256 is a good starting point
+        f_cutoff: 0.95,           // docs say start at 0.95 and adjust if needed
+        oversampling_factor: 128, // docs say to start at 128
+        interpolation: fixed_resample::rubato::SincInterpolationType::Nearest, // Nearest is fastest
+        window: fixed_resample::rubato::WindowFunction::Hann, // Hann is fastest.
     };
 
+    // Create the resampler instance using the parameters we made above.
     let resampler = SincFixedOut::<f32>::new(
         resample_ratio,
         max_resample_ratio_relative,
@@ -217,8 +278,15 @@ fn build_resampler(in_sample_rate: u32) -> SincFixedOut<f32> {
     resampler
 }
 
+/// Builds and returns an Opus encoder configured for the given input sample rate.
+/// We use stereo channels and a bitrate of 32kbps. Why 32kbps? Idk. lmao
+///
+/// # Arguments
+/// * `in_sample_rate` - The input sample rate (e.g. 16000 for Opus)
+/// # Returns
+/// * `Encoder` - The configured Opus encoder instance
 fn build_encoder(in_sample_rate: u32) -> Encoder {
-    let application = opus::Application::Audio;
+    let application = opus::Application::LowDelay;
     let mut encoder = Encoder::new(in_sample_rate, opus::Channels::Stereo, application)
         .expect("Failed to create Opus encoder");
     let _ = encoder.set_bitrate(opus::Bitrate::Bits(32_000));
@@ -256,6 +324,26 @@ fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Resu
     Ok(())
 }
 
+/// Changes the input sample rate of the given resampler to `new_in_rate`.
+/// This updates the resample ratio accordingly.
+/// Remember, we are always resampling to `OUT_SAMPLE_RATE` (16kHz).
+/// # Arguments
+/// * `resampler` - The resampler instance to update
+/// * `new_in_rate` - The new input sample rate (e.g. the system's output device sample rate)
+/// # Returns
+/// * `Result<(), fixed_resample::rubato::ResampleError>` - Ok if successful, Err if failed
+fn change_resampler_in_rate(
+    resampler: &mut SincFixedOut<f32>,
+    new_in_rate: u32,
+) -> Result<(), fixed_resample::rubato::ResampleError> {
+    let new_ratio = OUT_SAMPLE_RATE as f64 / new_in_rate as f64;
+    Resampler::set_resample_ratio(resampler, new_ratio, false)
+}
+
+/// Prints the SplitStream demo banner and copyright message to the console.
+/// Uses colored crate for styling.
+/// No arguments.
+/// No return value.
 fn print_splitstream_demo_msg() {
     let banner = "
 ███████╗██████╗ ██╗     ██╗████████╗███████╗████████╗██████╗ ███████╗ █████╗ ███╗   ███╗
@@ -271,14 +359,6 @@ fn print_splitstream_demo_msg() {
     println!("\t\t© Secretary Corporation 2024-2025, all rights reserved.")
 }
 
-fn change_resampler_in_rate(
-    resampler: &mut SincFixedOut<f32>,
-    new_in_rate: u32,
-) -> Result<(), fixed_resample::rubato::ResampleError> {
-    let new_ratio = OUT_SAMPLE_RATE as f64 / new_in_rate as f64;
-    Resampler::set_resample_ratio(resampler, new_ratio, false)
-}
-
 fn _frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
     ((sample_rate * FRAME_MS) / 1000.0).round() as usize
@@ -286,6 +366,12 @@ fn _frame_size(sample_rate: f64) -> usize {
 
 /// Spawns the CoreAudio listener tokio task that monitors for device changes from `coreaudio_listener`.
 /// Sends events to the provided an UnboundedSender with AudioPropertyChange.
+///
+/// # Arguments
+/// * `ws_client` - The WebSocketClient instance to use for transmission
+/// * `opus_packet_rx` - The UnboundedReceiver to receive Opus packets for transmission
+/// * `transcript_tx` - The UnboundedSender to send transcripts back to the main task
+/// No return value.
 fn create_websocket_task(
     ws_client: WebSocketClient,
     opus_packet_rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -303,6 +389,10 @@ fn create_websocket_task(
 
 /// Spawns the CoreAudio listener tokio task that monitors for device changes from `coreaudio_listener`.
 /// Sends events to the provided an UnboundedSender with AudioPropertyChange.
+///
+/// # Arguments
+/// * `ca_tx` - The UnboundedSender to send AudioPropertyChange events to the main task
+/// No return value.
 fn create_coreaudio_listener_task(ca_tx: mpsc::UnboundedSender<AudioPropertyChange>) {
     tokio::spawn(async move {
         let mut ca_listener = CoreAudioListener::new();
@@ -325,7 +415,7 @@ fn create_coreaudio_listener_task(ca_tx: mpsc::UnboundedSender<AudioPropertyChan
                 | AudioPropertyChange::HardwareDefaultInputDevice { .. }
                 | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
                     // Wait a moment for the system to stabilize
-                    sleep(Duration::from_millis(500));
+                    sleep(Duration::from_millis(500)).await;
                     // Rebuild synchronously on the main task
                     ca_listener.rebuild();
                 }
@@ -338,6 +428,10 @@ fn create_coreaudio_listener_task(ca_tx: mpsc::UnboundedSender<AudioPropertyChan
 
 /// Spawns a task to handle incoming transcripts (prints them as they arrive)
 /// with color coding for final vs interim and mic vs sys channel.
+///
+/// # Arguments
+/// * `transcript_rx` - The UnboundedReceiver to receive transcript messages as JSON strings
+/// No return value.
 fn create_transcript_stdout_task(mut transcript_rx: mpsc::UnboundedReceiver<String>) {
     // Spawn a task to handle incoming transcripts (prints them as they arrive)
     tokio::spawn(async move {
