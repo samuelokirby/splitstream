@@ -1,13 +1,12 @@
 use chrono::Local;
 use colored::*;
-use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters, VecResampler};
+use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
 use log::debug;
 use opus::{Decoder, Encoder};
 use ringbuf::traits::Consumer;
-use serde_json::Value;
 use std::{
     io::{self},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::mpsc;
 
@@ -25,91 +24,42 @@ pub mod websocket_client;
 
 #[tokio::main]
 async fn main() {
+    // Print startup message for console
     print_splitstream_demo_msg();
+    // Start by initializing a new aggregate device based on the user's default devices
     let mut dev = macos_device::OSXInputDevice::new().unwrap();
-    let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (test_tx, mut test_rx) = mpsc::unbounded_channel::<AudioPropertyChange>();
 
-    tokio::spawn(async move {
-        let mut ca_listener = CoreAudioListener::new();
-        let mut dev_change_rx = ca_listener.subscribe();
-        ca_listener.start();
-        // Listen for CoreAudio device change events
-        while let Ok(event) = dev_change_rx.recv().await {
-            // println!(
-            //     "[{}] CoreAudio event \"{:?}\" received.",
-            //     Local::now()
-            //         .format("%a %-I:%M%p")
-            //         .to_string()
-            //         .to_lowercase(),
-            //     event
-            // );
-            // Handle full device swaps
-            match event {
-                AudioPropertyChange::DeviceIsAlive
-                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
-                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
-                    // Wait a moment for the system to stabilize
-                    std::thread::sleep(Duration::from_millis(500));
-                    // Rebuild synchronously on the main task
-                    ca_listener.rebuild();
-                }
-                _ => {}
-            }
-            let _ = test_tx.send(event);
-        }
-    });
+    // Create the channels for Opus packets to be transmitted at the end of the loop
+    let (opus_packet_tx, opus_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    // Create the channel for CoreAudio events to trigger resampler updates on device change (death, sample rate change)
+    let (ca_tx, mut ca_rx) = mpsc::unbounded_channel::<AudioPropertyChange>();
 
+    // Spawn CoreAudio listener task early to cover HFP bluetooth 16khz downsampling
+    create_coreaudio_listener_task(ca_tx);
+
+    // Initialize `in_sample_rate` which matches the system's OUTPUT device sample rate.
     let in_sample_rate = dev.nominal_sample_rate;
 
+    // Start capturing audio from the aggregate device and get the ring buffer consumers
     let (mut mic_consumer, mut sys_consumer) = dev.start_capture().unwrap();
+    // Build the resampler to convert from `in_sample_rate` to 16kHz for Opus encoding and transmission
     let mut resampler = build_resampler(in_sample_rate);
+    // Allocate internal input buffers for the resampler
     let mut input_buffers = Resampler::input_buffer_allocate(&mut resampler, false);
 
-    let mut encoder = build_encoder(16_000); // Encode at 16kHz
-    let ws_client: WebSocketClient = WebSocketClient::new(
-        "your_access_token".to_string(),
-        "wss://secretary-backend-649765884774.us-east4.run.app/audio/stream".to_string(),
-        // "ws://localhost:8080/audio/stream".to_string(),
-    );
+    let access_token = "your_access_token".to_string();
+    let ws_url = "wss://secretary-backend-649765884774.us-east4.run.app/audio/stream".to_string(); // "ws://localhost:8080/audio/stream".to_string
+    // Create the WebSocketClient which opens a WS(S) connection to the backend and sends Opus frames
+    let ws_client: WebSocketClient = WebSocketClient::new(access_token, ws_url);
 
     // Add channels for transcripts (to receive from the WebSocket server)
     let (transcript_tx, transcript_rx) = mpsc::unbounded_channel::<String>();
 
     // Spawn a task to handle WebSocket transmission (sends audio frames as they arrive)
-    tokio::spawn(async move {
-        if let Err(e) = ws_client
-            .transmit_audio_frames(audio_rx, transcript_tx)
-            .await
-        {
-            eprintln!("WebSocket transmission error: {}", e);
-        }
-    });
-
+    // combines everything to be able to use transmit_audio_frames
+    create_websocket_task(ws_client, opus_packet_rx, transcript_tx);
     // Spawn a task to handle incoming transcripts (prints them as they arrive)
-    let mut transcript_rx = transcript_rx;
-    tokio::spawn(async move {
-        while let Some(transcript) = transcript_rx.recv().await {
-            let v: TranscriptMessage =
-                serde_json::from_str::<TranscriptMessage>(&transcript).unwrap();
-
-            // Base text
-            let mut text = v.text.clone();
-
-            // If final, color it dark green
-            if v.is_final {
-                text = text.green().bold().to_string();
-                // you can also pick a darker RGB shade:
-                // text = text.truecolor(0, 100, 0).to_string();
-            }
-
-            if v.channel == "microphone" {
-                println!("🎙️(mic)\t{}", text.white());
-            } else {
-                println!("🔊(sys) {}", text.bright_black());
-            }
-        }
-    });
+    create_transcript_stdout_task(transcript_rx);
 
     println!("Starting in 3...");
     std::thread::sleep(Duration::from_secs(1));
@@ -117,15 +67,17 @@ async fn main() {
     std::thread::sleep(Duration::from_secs(1));
     println!("1...");
     std::thread::sleep(Duration::from_secs(1));
-    let mut opus_packets = Vec::new();
 
+    let mut opus_packets = Vec::new();
     let confirm_msg = format!("✅ Recording. Press Ctrl+C to stop.")
         .green()
         .bold();
     println!("{}", confirm_msg);
+
+    let mut encoder = build_encoder(16_000); // Encode at 16kHz
     loop {
         // Check for test messages
-        if let Ok(event) = test_rx.try_recv() {
+        if let Ok(event) = ca_rx.try_recv() {
             match event {
                 AudioPropertyChange::ActualSampleRate { hz } => {
                     debug!("Nominal sample rate changed to {}", hz);
@@ -221,7 +173,7 @@ async fn main() {
                     // println!("Encoded frame size: {}", packet_len);
 
                     opus_packets.push(encoded.clone());
-                    let _ = audio_tx.send(encoded);
+                    let _ = opus_packet_tx.send(encoded);
                 }
                 Err(e) => {
                     eprintln!("Resample error: {e:?}");
@@ -326,6 +278,86 @@ fn change_resampler_in_rate(
 fn _frame_size(sample_rate: f64) -> usize {
     const FRAME_MS: f64 = 20.0;
     ((sample_rate * FRAME_MS) / 1000.0).round() as usize
+}
+
+/// Spawns the CoreAudio listener tokio task that monitors for device changes from `coreaudio_listener`.
+/// Sends events to the provided an UnboundedSender with AudioPropertyChange.
+fn create_websocket_task(
+    ws_client: WebSocketClient,
+    opus_packet_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    transcript_tx: mpsc::UnboundedSender<String>,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = ws_client
+            .transmit_audio_frames(opus_packet_rx, transcript_tx)
+            .await
+        {
+            eprintln!("WebSocket transmission error: {}", e);
+        }
+    });
+}
+
+/// Spawns the CoreAudio listener tokio task that monitors for device changes from `coreaudio_listener`.
+/// Sends events to the provided an UnboundedSender with AudioPropertyChange.
+fn create_coreaudio_listener_task(ca_tx: mpsc::UnboundedSender<AudioPropertyChange>) {
+    tokio::spawn(async move {
+        let mut ca_listener = CoreAudioListener::new();
+        let mut dev_change_rx = ca_listener.subscribe();
+        ca_listener.start();
+        // Listen for CoreAudio device change events
+        while let Ok(event) = dev_change_rx.recv().await {
+            // Send debug message with the CoreAudio event
+            debug!(
+                "[{}] CoreAudio event \"{:?}\" received.",
+                Local::now()
+                    .format("%a %-I:%M%p")
+                    .to_string()
+                    .to_lowercase(),
+                event
+            );
+            // Handle full device swaps
+            match event {
+                AudioPropertyChange::DeviceIsAlive
+                | AudioPropertyChange::HardwareDefaultInputDevice { .. }
+                | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
+                    // Wait a moment for the system to stabilize
+                    std::thread::sleep(Duration::from_millis(500));
+                    // Rebuild synchronously on the main task
+                    ca_listener.rebuild();
+                }
+                _ => {}
+            }
+            let _ = ca_tx.send(event);
+        }
+    });
+}
+
+/// Spawns a task to handle incoming transcripts (prints them as they arrive)
+/// with color coding for final vs interim and mic vs sys channel.
+fn create_transcript_stdout_task(mut transcript_rx: mpsc::UnboundedReceiver<String>) {
+    // Spawn a task to handle incoming transcripts (prints them as they arrive)
+    tokio::spawn(async move {
+        while let Some(transcript) = transcript_rx.recv().await {
+            let v: TranscriptMessage =
+                serde_json::from_str::<TranscriptMessage>(&transcript).unwrap();
+
+            // Base text
+            let mut text = v.text.clone();
+
+            // If final, color it dark green
+            if v.is_final {
+                text = text.green().bold().to_string();
+                // you can also pick a darker RGB shade:
+                // text = text.truecolor(0, 100, 0).to_string();
+            }
+
+            if v.channel == "microphone" {
+                println!("🎙️(mic)\t{}", text.white());
+            } else {
+                println!("🔊(sys) {}", text.bright_black());
+            }
+        }
+    });
 }
 
 #[cfg(test)]
