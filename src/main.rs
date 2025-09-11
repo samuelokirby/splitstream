@@ -6,6 +6,7 @@ use opus::{Decoder, Encoder};
 use ringbuf::traits::Consumer;
 use std::{
     io::{self},
+    thread::sleep,
     time::Duration,
 };
 use tokio::sync::mpsc;
@@ -21,6 +22,8 @@ pub mod coreaudio_listener;
 pub mod macos_device;
 pub mod transcript_msg;
 pub mod websocket_client;
+
+const OUT_SAMPLE_RATE: u32 = 16_000;
 
 #[tokio::main]
 async fn main() {
@@ -62,11 +65,11 @@ async fn main() {
     create_transcript_stdout_task(transcript_rx);
 
     println!("Starting in 3...");
-    std::thread::sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1));
     println!("2...");
-    std::thread::sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1));
     println!("1...");
-    std::thread::sleep(Duration::from_secs(1));
+    sleep(Duration::from_secs(1));
 
     let mut opus_packets = Vec::new();
     let confirm_msg = format!("✅ Recording. Press Ctrl+C to stop.")
@@ -74,10 +77,11 @@ async fn main() {
         .bold();
     println!("{}", confirm_msg);
 
-    let mut encoder = build_encoder(16_000); // Encode at 16kHz
+    let mut encoder = build_encoder(OUT_SAMPLE_RATE); // Encode at 16kHz
     loop {
-        // Check for test messages
+        // Start by checking for any CoreAudio events to handle device updates
         if let Ok(event) = ca_rx.try_recv() {
+            // Handle events depending on the type of AudioPropertyChange
             match event {
                 AudioPropertyChange::ActualSampleRate { hz } => {
                     debug!("Nominal sample rate changed to {}", hz);
@@ -89,7 +93,7 @@ async fn main() {
             if let Err(e) = dev.stop_capture() {
                 eprintln!("Failed to stop capture: {e:?}");
             }
-            std::thread::sleep(Duration::from_millis(500));
+            sleep(Duration::from_millis(500));
             match macos_device::OSXInputDevice::new() {
                 Ok(new_dev) => {
                     println!(
@@ -189,7 +193,7 @@ async fn main() {
 }
 
 fn build_resampler(in_sample_rate: u32) -> SincFixedOut<f32> {
-    let out_sample_rate = 16_000;
+    let out_sample_rate = OUT_SAMPLE_RATE;
     let resample_ratio = out_sample_rate as f64 / in_sample_rate as f64; // e.g. 48000 / 44100 = 1.088435
     let max_resample_ratio_relative = 3.1; // Allow for some variance in sample rate
 
@@ -222,7 +226,7 @@ fn build_encoder(in_sample_rate: u32) -> Encoder {
 }
 
 fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Result<()> {
-    let sample_rate = 16_000;
+    let sample_rate = OUT_SAMPLE_RATE;
     let channels = opus::Channels::Stereo;
     let mut decoder = Decoder::new(sample_rate, channels).expect("Failed to create Opus decoder");
 
@@ -271,7 +275,7 @@ fn change_resampler_in_rate(
     resampler: &mut SincFixedOut<f32>,
     new_in_rate: u32,
 ) -> Result<(), fixed_resample::rubato::ResampleError> {
-    let new_ratio = 16_000.0 / new_in_rate as f64;
+    let new_ratio = OUT_SAMPLE_RATE as f64 / new_in_rate as f64;
     Resampler::set_resample_ratio(resampler, new_ratio, false)
 }
 
@@ -321,7 +325,7 @@ fn create_coreaudio_listener_task(ca_tx: mpsc::UnboundedSender<AudioPropertyChan
                 | AudioPropertyChange::HardwareDefaultInputDevice { .. }
                 | AudioPropertyChange::HardwareDefaultOutputDevice { .. } => {
                     // Wait a moment for the system to stabilize
-                    std::thread::sleep(Duration::from_millis(500));
+                    sleep(Duration::from_millis(500));
                     // Rebuild synchronously on the main task
                     ca_listener.rebuild();
                 }
@@ -429,7 +433,7 @@ mod tests {
     #[test]
     fn test_encoder_create_and_encode_silence() {
         // 20ms stereo frame at 16 kHz = 320 frames per ch, interleaved floats
-        let mut enc = build_encoder(16_000);
+        let mut enc = build_encoder(OUT_SAMPLE_RATE);
         let mut packet = vec![0u8; 400];
 
         let mut interleaved = vec![0.0_f32; 320 * 2];
