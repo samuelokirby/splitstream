@@ -1,5 +1,13 @@
+// src/coreaudio_listener.rs
+//! CoreAudioListener listens for CoreAudio property changes and broadcasts events.
+
 use cidre::core_audio as ca;
-use std::ffi::c_void;
+use std::fmt::Debug;
+use std::panic;
+use std::{
+    ffi::c_void,
+    fmt::{self, Formatter},
+};
 use tokio::sync::broadcast::{self, Receiver, Sender};
 
 use coreaudio_sys::{
@@ -12,8 +20,8 @@ use coreaudio_sys::{
     kAudioObjectUnknown,
 };
 use log::{error, info};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
+#[derive(Debug)]
 struct ListenerClientData {
     event_tx: Sender<AudioPropertyChange>,
 }
@@ -27,6 +35,17 @@ struct SendPtr<T>(*mut T);
 // 3. We control the lifetime - we create it in register_ca_listeners and free it in teardown_ca_listeners
 unsafe impl<T> Send for SendPtr<T> where T: Send {}
 
+impl<T> Debug for SendPtr<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "SendPtr({:p})", self.0)
+    }
+}
+
+/// SendPtr is a simple wrapper around a raw pointer to make it Send.
+/// If we didn't have this, we couldn't pass the pointer to the CoreAudio callback
+/// without Rust screaming at us.
+/// This was AI generated, so I don't know if it's safe or not, but it seems to work.
+/// Read the unsafe impl docstring for details.
 impl<T> SendPtr<T> {
     fn new(ptr: *mut T) -> Self {
         SendPtr(ptr)
@@ -37,6 +56,15 @@ impl<T> SendPtr<T> {
     }
 }
 
+/// CoreAudioListener listens for CoreAudio property changes and broadcasts events.
+/// It uses a broadcast channel to allow multiple subscribers to receive events.
+/// It manages registration and teardown of CoreAudio property listeners.
+///
+/// default_input_device and default_output_device are the current default devices.
+/// is_listening tracks whether listeners are currently registered to prevent double registration.
+/// event_tx is the transmitter for broadcasting AudioPropertyChange events.
+/// listener_client_data is an optional SendPtr to ListenerClientData, which holds the event_tx.
+#[derive(Debug)]
 pub struct CoreAudioListener {
     pub default_input_device: ca::Device,
     pub default_output_device: ca::Device,
@@ -46,6 +74,7 @@ pub struct CoreAudioListener {
 }
 
 impl CoreAudioListener {
+    /// Creates a new CoreAudioListener instance.
     pub fn new() -> Self {
         let (event_tx, _event_rx) = broadcast::channel::<AudioPropertyChange>(16);
         let default_output_device = ca::System::default_output_device().unwrap();
@@ -64,6 +93,7 @@ impl CoreAudioListener {
         }
     }
 
+    /// Starts listening for CoreAudio property changes by registering listeners.
     pub fn start(&mut self) {
         if self.is_listening {
             error!("Already listening for CoreAudio events");
@@ -73,6 +103,7 @@ impl CoreAudioListener {
         self.is_listening = true;
     }
 
+    /// Stops listening for CoreAudio property changes by tearing down listeners.
     pub fn stop(&mut self) {
         if !self.is_listening {
             error!("Not currently listening for CoreAudio events");
@@ -82,29 +113,42 @@ impl CoreAudioListener {
         self.is_listening = false;
     }
 
-    /// This function needs to be thread-safe as it may be called from multiple threads.
+    /// rebuild stops the current listeners (if any), updates the default devices,
+    /// and restarts listening with the new devices.
+    /// This is useful when the default input/output devices change.
     pub fn rebuild(&mut self) {
+        // Stop listening first
         self.stop();
         // Update the default devices
         self.default_output_device = ca::System::default_output_device().unwrap();
         self.default_input_device = ca::System::default_input_device().unwrap();
 
+        // Start again after updating devices
         self.start();
     }
 
+    // Returns a new Receiver for AudioPropertyChange events.
+    // Each call to subscribe() gives a new Receiver that gets all events from that point forward
     pub fn subscribe(&self) -> Receiver<AudioPropertyChange> {
         self.event_tx.subscribe()
     }
 
-    /// Registers listeners for CoreAudio property changes on the specified device ID.
+    /// Registers listeners for CoreAudio property changes on the default output device.
+    /// Using cidre, we get the AudioObjectID of the default output device and register
+    /// listeners for the properties defined in PROPERTY_SELECTORS and HARDWARE_SELECTORS.
+    /// The listener callback is device_changed_listener, which sends events through the
+    /// event_tx transmitter.
+    /// We allocate ListenerClientData once and reuse it so teardown can remove the same listener.
     fn register_ca_listeners(&mut self) {
+        // If our default device matches CoreAudio's unknown device address, stop early.
         if self.default_output_device.0.0 == kAudioObjectUnknown {
-            error!("Invalid default output device, cannot register listeners");
-            return;
+            panic!("Invalid default output device, cannot register device listeners.");
         }
 
         let mut device_property_addresses: Vec<AudioObjectPropertyAddress> = Vec::new();
         let mut hardware_property_addresses: Vec<AudioObjectPropertyAddress> = Vec::new();
+        // First, build the property addresses we want to listen for.
+        // These are mostly related to sample rate changes on the output device.
         for &dselector in PROPERTY_SELECTORS {
             let address = get_property_address(
                 dselector,
@@ -114,6 +158,10 @@ impl CoreAudioListener {
             device_property_addresses.push(address);
         }
 
+        // Next, build the hardware property addresses we want to listen for.
+        // These are tied to the system object and relate to default device changes,
+        // not any specific device.
+        // These are mostly related to default input/output device changes or device death.
         for &hselector in HARDWARE_SELECTORS {
             let address = get_property_address(
                 hselector,
@@ -122,6 +170,9 @@ impl CoreAudioListener {
             );
             hardware_property_addresses.push(address);
         }
+
+        // Here we use SendPtr to wrap the raw pointer to make it Send-safe.
+        // We're able to do this due to the nature of CoreAudio callbacks.
 
         // Allocate client_data once and reuse it so teardown can remove the same listener.
         let event_tx_ptr: *mut ListenerClientData = if let Some(ptr) = &self.listener_client_data {
@@ -136,6 +187,7 @@ impl CoreAudioListener {
         };
 
         unsafe {
+            // Register listeners for each property address on the default output device.
             for &address in &device_property_addresses {
                 AudioObjectAddPropertyListener(
                     self.default_output_device.0.0, // returns the AudioObjectID u32
@@ -145,6 +197,7 @@ impl CoreAudioListener {
                 );
             }
 
+            // Register listeners for each hardware property address on the system object.
             for &address in &hardware_property_addresses {
                 AudioObjectAddPropertyListener(
                     kAudioObjectSystemObject,
@@ -156,6 +209,12 @@ impl CoreAudioListener {
         }
     }
 
+    /// Tears down previously registered CoreAudio property listeners.
+    /// This function removes listeners for the properties defined in PROPERTY_SELECTORS
+    /// and HARDWARE_SELECTORS from the default output device and system object.
+    /// It uses the same client_data pointer that was used during registration to ensure
+    /// the correct listeners are removed.
+    /// After removing the listeners, it frees the allocated ListenerClientData to avoid memory leaks.
     fn teardown_ca_listeners(&mut self) {
         if !self.is_listening {
             error!("Not currently listening for CoreAudio events");
@@ -214,7 +273,7 @@ impl CoreAudioListener {
     }
 }
 
-/// AudioPropertyChange represents a more readable representation of CoreAudio property
+/// AudioPropertyChange represents a more readable abstraction of CoreAudio property
 /// changes we want to listen for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioPropertyChange {
@@ -240,8 +299,8 @@ static HARDWARE_SELECTORS: &[AudioObjectPropertySelector] = &[
 
 /// CoreAudio property listener callback.
 /// This function is called by CoreAudio when a property change is detected.
-/// It identifies the changed property and sends an event through a transmitter...
-/// ...the transmitter is passed as client data from register_ca_listeners().
+/// It identifies the changed property and sends an event through a transmitter.
+/// The transmitter is passed as client data from register_ca_listeners().
 ///
 /// - `num_addresses`: The number of property addresses that have changed.
 /// - `addresses`: A pointer to an array of AudioObjectPropertyAddress structures.
@@ -264,7 +323,7 @@ extern "C" fn device_changed_listener(
     for i in 0..num_addresses {
         let address = unsafe { *addresses.add(i as usize) };
         let audio_property_changed = match address.mSelector {
-            // long but readable
+            // Return the new actual sample rate in Hz if it changes.
             kAudioDevicePropertyActualSampleRate | kAudioDevicePropertyNominalSampleRate => {
                 let new_sample_rate: u32 =
                     default_output_device.actual_sample_rate().unwrap() as u32;
@@ -272,21 +331,25 @@ extern "C" fn device_changed_listener(
                     hz: new_sample_rate,
                 }
             }
-            kAudioDevicePropertyDeviceIsAlive => AudioPropertyChange::DeviceIsAlive,
+            // If the input device changes, return its ID and sample rate.
             kAudioHardwarePropertyDefaultInputDevice => {
                 AudioPropertyChange::HardwareDefaultInputDevice {
                     id: default_input_device.0.0,
                     hz: default_input_device.actual_sample_rate().unwrap() as u32,
                 }
             }
+            // If the output device changes, return the new device ID and sample rate.
+            kAudioDevicePropertyDeviceIsAlive => AudioPropertyChange::DeviceIsAlive,
             kAudioHardwarePropertyDefaultOutputDevice => {
                 AudioPropertyChange::HardwareDefaultOutputDevice {
                     id: default_output_device.0.0,
                     hz: default_output_device.actual_sample_rate().unwrap() as u32,
                 }
             }
+            // For any other property changes, return Unknown.
             _ => AudioPropertyChange::Unknown,
         };
+        // Finally, send the event through the transmitter.
         let _ = event_tx.send(audio_property_changed.clone());
 
         info!(
@@ -298,6 +361,9 @@ extern "C" fn device_changed_listener(
 }
 
 /// Helper function to create an AudioObjectPropertyAddress struct.
+/// This is just a convenience to avoid repeating the struct initialization
+/// that CoreAudio expects. It's an abstraction ripped from Apple's
+/// starter project.
 fn get_property_address(
     selector: AudioObjectPropertySelector,
     scope: AudioObjectPropertyScope,
