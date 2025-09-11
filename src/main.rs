@@ -2,12 +2,9 @@ use chrono::Local;
 use colored::*;
 use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameters};
 use log::{debug, info, trace};
-use opus::{Decoder, Encoder};
+use opus::Encoder;
 use ringbuf::traits::Consumer;
-use std::{
-    io::{self},
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::{sync::mpsc, task::yield_now, time::sleep};
 
 use crate::{
@@ -23,6 +20,7 @@ pub mod transcript_msg;
 pub mod websocket_client;
 
 const OUT_SAMPLE_RATE: u32 = 16_000;
+const FINAL_FRAME_SIZE: usize = 320; // 20ms @ 16kHz
 
 #[tokio::main]
 async fn main() {
@@ -80,9 +78,8 @@ async fn main() {
     loop {
         // This is here to avoid busy-waiting if there's nothing to do.
         let mut will_busyspin = true;
-        // Start by checking for any CoreAudio events to handle device updates
 
-        // If there's an event...
+        // First, start by checking for any CoreAudio events to handle device updates
         if let Ok(event) = ca_rx.try_recv() {
             // Handle events depending on the type of AudioPropertyChange
             match event {
@@ -112,6 +109,7 @@ async fn main() {
 
             // Give the system a moment to stabilize
             sleep(Duration::from_millis(500)).await;
+            // TODO
             // Right now, we create a new aggregate device on any of the above events.
             // (In the future, we could be smarter and just update the existing device
             // if the input/output devices are still alive.)
@@ -141,7 +139,8 @@ async fn main() {
         }
 
         // By now, we have a valid mic_consumer and sys_consumer from the current aggregate device.
-        // We can read from their ring buffers, resample, encode, and send.
+        // We can read from their ring buffers, resample, encode, and send, so we begin
+        // the audio processing part of the loop.
 
         // 1. Read from aggregate device's ring buffers
         let mut mic_buffer = [0.0_f32; 512];
@@ -151,6 +150,7 @@ async fn main() {
 
         // If either channel has data, append samples to per-channel input buffers
         if mic_read > 0 || sys_read > 0 {
+            // Trace log the number of samples read from each channel every loop.
             trace!(
                 "{:3} 🎙️ + {:3} 📣 = {:4} total",
                 mic_read,
@@ -166,13 +166,18 @@ async fn main() {
             }
             will_busyspin = false; // We did work, so don't busyspin
         }
+        // By this point, we have appended any new samples to the input buffers.
+        // Next, we check if we have enough samples to resample and encode.
 
         // 2. Resample if we have enough input samples for the next output chunk
-
         // We determine if we have enough input samples by using the resampler's
         // `input_frames_next` method, which tells us how many input frames are needed
-        // to produce the next fixed output chunk (320 frames at 16kHz) for a single
-        // channel (but we need it for both channels).
+        // to produce the next fixed output chunk (320 or FINAL_FRAME_SIZE frames at 16kHz)
+        // for a single channel (but we need it for both channels, so we double it when
+        // we interleave).
+
+        // Get the number of input frames required for the next output chunk
+        // This is given to us by rubato
         let required_input = Resampler::input_frames_next(&resampler); // I think this is always 320
 
         // If we have enough input samples for both channels, we can resample
@@ -184,8 +189,8 @@ async fn main() {
 
             // out_mic and out_sys are empty arrays that will be filled later by the resampler's
             // audio output for each channel. It starts with zeroed buffers.
-            let mut out_mic = [0.0_f32; 320];
-            let mut out_sys = [0.0_f32; 320];
+            let mut out_mic = [0.0_f32; FINAL_FRAME_SIZE];
+            let mut out_sys = [0.0_f32; FINAL_FRAME_SIZE];
             let mut wave_out = [&mut out_mic[..], &mut out_sys[..]];
             let active = [true, true];
 
@@ -270,7 +275,7 @@ fn build_resampler(in_sample_rate: u32) -> SincFixedOut<f32> {
         resample_ratio,
         max_resample_ratio_relative,
         parameters,
-        320,
+        FINAL_FRAME_SIZE,
         2,
     )
     .expect("Failed to create resampler");
@@ -430,6 +435,7 @@ fn create_transcript_stdout_task(mut transcript_rx: mpsc::UnboundedReceiver<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opus::Decoder;
 
     #[test]
     fn test_frame_size_common_rates() {
@@ -457,8 +463,8 @@ mod tests {
         let wave_in = [&ch0[..], &ch1[..]];
 
         // FixedOut is configured for 320 output frames
-        let mut out_mic = [0.0_f32; 320];
-        let mut out_sys = [0.0_f32; 320];
+        let mut out_mic = [0.0_f32; FINAL_FRAME_SIZE];
+        let mut out_sys = [0.0_f32; FINAL_FRAME_SIZE];
         let mut wave_out = [&mut out_mic[..], &mut out_sys[..]];
         let active = [true, true];
 
@@ -466,7 +472,7 @@ mod tests {
             Resampler::process_into_buffer(&mut resampler, &wave_in, &mut wave_out, Some(&active))
                 .expect("resample should succeed");
 
-        assert_eq!(produced, 320);
+        assert_eq!(produced, FINAL_FRAME_SIZE);
         assert!(out_mic.iter().all(|v| v.abs() < 1e-6));
         assert!(out_sys.iter().all(|v| v.abs() < 1e-6));
     }
@@ -499,7 +505,7 @@ mod tests {
         let mut enc = build_encoder(OUT_SAMPLE_RATE);
         let mut packet = vec![0u8; 400];
 
-        let mut interleaved = vec![0.0_f32; 320 * 2];
+        let interleaved = vec![0.0_f32; FINAL_FRAME_SIZE * 2];
         let len = enc
             .encode_float(&interleaved, &mut packet)
             .expect("encode ok");
@@ -508,10 +514,10 @@ mod tests {
 
         // Decode back to PCM i16 to validate basic round-trip
         let mut dec = Decoder::new(16_000, opus::Channels::Stereo).expect("decoder ok");
-        let mut pcm = vec![0i16; 320 * 2];
+        let mut pcm = vec![0i16; FINAL_FRAME_SIZE * 2];
         let samples = dec.decode(&packet, &mut pcm, false).expect("decode ok");
         assert_eq!(
-            samples, 320,
+            samples, FINAL_FRAME_SIZE,
             "expected 20ms @ 16kHz = 320 samples per channel"
         );
     }
