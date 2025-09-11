@@ -293,37 +293,6 @@ fn build_encoder(in_sample_rate: u32) -> Encoder {
     encoder
 }
 
-fn decode_and_write_wav(opus_packets: &[Vec<u8>], output_path: &str) -> io::Result<()> {
-    let sample_rate = OUT_SAMPLE_RATE;
-    let channels = opus::Channels::Stereo;
-    let mut decoder = Decoder::new(sample_rate, channels).expect("Failed to create Opus decoder");
-
-    let spec = hound::WavSpec {
-        channels: 2,
-        sample_rate: sample_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(output_path, spec).unwrap();
-
-    let mut decoded_buf = vec![0i16; 960 * 2]; // 960 samples = 20ms @ 48k, scaled to 16k later
-
-    for packet in opus_packets {
-        // Decode into PCM i16 samples
-        match decoder.decode(packet, &mut decoded_buf, false) {
-            Ok(num_samples) => {
-                for sample in &decoded_buf[..num_samples * 2] {
-                    let _ = writer.write_sample(*sample);
-                }
-            }
-            Err(err) => eprintln!("Decode error: {:?}", err),
-        }
-    }
-
-    let _ = writer.finalize();
-    Ok(())
-}
-
 /// Changes the input sample rate of the given resampler to `new_in_rate`.
 /// This updates the resample ratio accordingly.
 /// Remember, we are always resampling to `OUT_SAMPLE_RATE` (16kHz).
