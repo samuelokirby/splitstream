@@ -423,7 +423,7 @@ fn create_transcript_stdout_task(mut transcript_rx: mpsc::UnboundedReceiver<Stri
                 // text = text.truecolor(0, 100, 0).to_string();
             }
 
-            if v.channel == "microphone" {
+            if v.channel == transcript_msg::Channel::Microphone {
                 println!("🎙️(mic)\t{}", text.white());
             } else {
                 println!("🔊(sys) {}", text.bright_black());
