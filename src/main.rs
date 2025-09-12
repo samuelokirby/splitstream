@@ -9,6 +9,7 @@ use tokio::{sync::mpsc, task::yield_now, time::sleep};
 
 use crate::{
     coreaudio_listener::{AudioPropertyChange, CoreAudioListener},
+    settings::Settings,
     transcript_msg::TranscriptMessage,
     websocket_client::WebSocketClient,
 };
@@ -16,6 +17,7 @@ use crate::{
 pub mod audio_input_buffers;
 pub mod coreaudio_listener;
 pub mod macos_device;
+pub mod settings;
 pub mod transcript_msg;
 pub mod websocket_client;
 
@@ -24,6 +26,10 @@ const FINAL_FRAME_SIZE: usize = 320; // 20ms @ 16kHz
 
 #[tokio::main]
 async fn main() {
+    // Initialize settings from settings.toml
+    let settings = Settings::new();
+    // Keep track of whether compliance mode is on (system audio muted)
+    let sys_muted = settings.compliance_mode_on_start;
     // Print startup message for console
     print_splitstream_demo_msg();
     // Start by initializing a new aggregate device based on the user's default devices
@@ -69,6 +75,7 @@ async fn main() {
     sleep(Duration::from_secs(1)).await;
 
     let mut opus_packets = Vec::new();
+
     let confirm_msg = format!("✅ Recording. Press Ctrl+C to stop.")
         .green()
         .bold();
@@ -205,8 +212,12 @@ async fn main() {
                     input_buffers[0].drain(0..required_input);
                     input_buffers[1].drain(0..required_input);
 
-                    // Interleave produced samples
+                    // Mute system audio if sys_muted is true by zeroing out_sys
+                    if sys_muted {
+                        mute_buffer(&mut out_sys[..produced]);
+                    }
 
+                    // Interleave produced samples
                     // Produced is usually 320, but the reason why we don't assume that is
                     // is because the rubato resampler can produce variable output sizes
                     // This is handled for us through rubato's `input_buffer_allocate`.
@@ -246,6 +257,17 @@ async fn main() {
             // and reduces CPU usage when there's nothing to do.
             yield_now().await;
         }
+    }
+}
+
+/// Mutes the given audio buffer by setting all samples to 0.0.
+/// This is useful for silencing a channel when compliance mode is enabled.
+///
+/// # Arguments
+/// * `buffer` - A mutable slice of f32 samples to mute
+fn mute_buffer(buffer: &mut [f32]) {
+    for sample in buffer.iter_mut() {
+        *sample = 0.0;
     }
 }
 
