@@ -9,6 +9,7 @@ use tokio::{sync::mpsc, task::yield_now, time::sleep};
 
 use crate::{
     coreaudio_listener::{AudioPropertyChange, CoreAudioListener},
+    echo_cancellation::EchoCanceler,
     settings::Settings,
     transcript_msg::TranscriptMessage,
     websocket_client::WebSocketClient,
@@ -53,6 +54,9 @@ async fn main() {
     let mut resampler = build_resampler(in_sample_rate);
     // Allocate internal input buffers for the resampler
     let mut input_buffers = Resampler::input_buffer_allocate(&mut resampler, false);
+
+    // Create the EchoCanceler instance
+    let mut aec = EchoCanceler::new();
 
     let access_token = "your_access_token".to_string();
     let ws_url = "wss://secretary-backend-649765884774.us-east4.run.app/audio/stream".to_string(); // "ws://localhost:8080/audio/stream".to_string
@@ -217,6 +221,18 @@ async fn main() {
                     if sys_muted {
                         mute_buffer(&mut out_sys[..produced]);
                     }
+
+                    // *** NEW: Apply echo cancellation here ***
+                    // Convert arrays to Vec<f32> for EchoCanceler (expects Vec)
+                    let mut capture_frame: Vec<f32> = out_mic[..produced].to_vec();
+                    let render_frame: Vec<f32> = out_sys[..produced].to_vec();
+
+                    // Process mic input to cancel echo from speaker output
+                    // TODO: improve the error handling here, should revert to original mic if AEC fails
+                    capture_frame = aec.cancel_speaker_echo(capture_frame, render_frame);
+
+                    // Copy processed mic back to out_mic array (truncate if needed)
+                    out_mic[..produced].copy_from_slice(&capture_frame[..produced]);
 
                     // Interleave produced samples
                     // Produced is usually 320, but the reason why we don't assume that is
