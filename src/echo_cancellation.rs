@@ -1,6 +1,6 @@
 use webrtc_audio_processing::*;
 
-struct EchoCanceler {
+pub struct EchoCanceler {
     ap: Processor,
 }
 
