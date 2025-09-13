@@ -24,3 +24,4 @@ tokio = "1.47.1"
 tokio-tungstenite = { version = "0.27.0", features = ["native-tls"] }
 tokio-util = "0.7.16"
 tungstenite = "0.27.0"
+webrtc-audio-processing = "0.4.0"
