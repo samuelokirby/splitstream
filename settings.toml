@@ -1,2 +1,2 @@
 
-compliance_mode_on_start = true # If true, system audio won't be captured until the user explicitly enables it
+compliance_mode_on_start = false # If true, system audio won't be captured until the user explicitly enables it
