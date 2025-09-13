@@ -1,68 +1,45 @@
-use webrtc_audio_processing::*;
+use aec_rs::*;
 
 pub struct EchoCanceler {
-    ap: Processor,
+    aec: Aec,
 }
 
 impl EchoCanceler {
     pub fn new() -> Self {
-        let config = InitializationConfig {
-            num_capture_channels: 2, // Stereo mic input
-            num_render_channels: 2,  // Stereo speaker output
-            ..InitializationConfig::default()
+        let config = aec_rs::AecConfig {
+            sample_rate: 16000,      // 16Khz (1s)
+            filter_length: 3200,     // 0.2s
+            frame_size: 320,         // 0.02s
+            enable_preprocess: true, // Denoise as well
         };
-
-        let mut ap = Processor::new(&config).unwrap();
-
-        let config = Config {
-            echo_cancellation: Some(EchoCancellation {
-                suppression_level: EchoCancellationSuppressionLevel::Moderate,
-                enable_delay_agnostic: false,
-                enable_extended_filter: false,
-                stream_delay_ms: None,
-            }),
-            ..Config::default()
-        };
-        ap.set_config(config);
-        Self { ap }
+        let aec = aec_rs::Aec::new(&config);
+        Self { aec }
     }
 
-    // cancel_speaker_echo takes in a capture_frame (from the mic) and a render_frame
-    // (what is being sent to the speakers), and processes them to reduce echo.
-    //
-    // # Arguments
-    // * `capture_frame` - A vector of f32 samples from the microphone input.
-    // * `render_frame` - A vector of f32 samples that are being sent to the speakers.
-    // # Returns
-    // * `Vec<f32>` - The processed microphone input with echo reduced.
+    pub fn cancel_echo_f32(&self, rec_buffer: &[f32], echo_buffer: &[f32], out_buffer: &mut [f32]) {
+        // Convert f32 to i16 (scale from -1.0..1.0 to i16 range)
+        let rec_i16: Vec<i16> = rec_buffer.iter().map(|&x| (x * 32767.0) as i16).collect();
+        let echo_i16: Vec<i16> = echo_buffer.iter().map(|&x| (x * 32767.0) as i16).collect();
+        let mut out_i16: Vec<i16> = vec![0; out_buffer.len()];
+
+        // Call the original i16 method
+        self.aec.cancel_echo(&rec_i16, &echo_i16, &mut out_i16);
+
+        // Convert back to f32
+        for (i, &val) in out_i16.iter().enumerate() {
+            out_buffer[i] = val as f32 / 32767.0;
+        }
+    }
+
     pub fn cancel_speaker_echo(
         &mut self,
-        capture_frame: Vec<f32>,
+        mut capture_frame: Vec<f32>,
         render_frame: Vec<f32>,
     ) -> Vec<f32> {
-        let ap = &mut self.ap;
-        // mic = capture, speaker = render
-        // The render_frame is what is sent to the speakers, and
-        // capture_frame is audio captured from a microphone.
-        let mut render_frame_output = render_frame.clone();
-        ap.process_render_frame(&mut render_frame_output).unwrap();
-
-        assert_eq!(
-            render_frame, render_frame_output,
-            "render_frame should not be modified."
-        );
-
-        // This is the now cleaned up microphone input, with echo from the speakers reduced.
-        let mut capture_frame_output = capture_frame.clone();
-        ap.process_capture_frame(&mut capture_frame_output).unwrap();
-
-        assert_ne!(
-            capture_frame, capture_frame_output,
-            "Echo cancellation should have modified capture_frame."
-        );
-
-        // capture_frame_output is now ready to send to a remote peer.
-        println!("Successfully processed a render and capture frame through WebRTC!");
-        capture_frame_output
+        // Call the new f32 method directly (no need for manual conversions here)
+        // Clone capture_frame so we don't have an immutable and mutable borrow at the same time.
+        let rec_clone = capture_frame.clone();
+        self.cancel_echo_f32(&rec_clone, &render_frame, &mut capture_frame);
+        capture_frame // Return the modified capture_frame
     }
 }
