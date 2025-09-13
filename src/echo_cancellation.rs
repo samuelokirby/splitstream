@@ -27,16 +27,20 @@ impl EchoCanceler {
         Self { ap }
     }
 
-    // cancel_echo takes in a capture_frame (from the mic) and a render_frame
+    // cancel_speaker_echo takes in a capture_frame (from the mic) and a render_frame
     // (what is being sent to the speakers), and processes them to reduce echo.
     //
     // # Arguments
     // * `capture_frame` - A vector of f32 samples from the microphone input.
     // * `render_frame` - A vector of f32 samples that are being sent to the speakers.
     // # Returns
-    // * `Result<(), Error>` - Ok if processing was successful, Err otherwise
-    pub fn cancel_echo(&mut self, capture_frame: Vec<f32>, render_frame: Vec<f32>) {
-        let mut ap = self.ap.clone();
+    // * `Vec<f32>` - The processed microphone input with echo reduced.
+    pub fn cancel_speaker_echo(
+        &mut self,
+        capture_frame: Vec<f32>,
+        render_frame: Vec<f32>,
+    ) -> Vec<f32> {
+        let ap = &mut self.ap;
         // mic = capture, speaker = render
         // The render_frame is what is sent to the speakers, and
         // capture_frame is audio captured from a microphone.
@@ -48,6 +52,7 @@ impl EchoCanceler {
             "render_frame should not be modified."
         );
 
+        // This is the now cleaned up microphone input, with echo from the speakers reduced.
         let mut capture_frame_output = capture_frame.clone();
         ap.process_capture_frame(&mut capture_frame_output).unwrap();
 
@@ -58,5 +63,6 @@ impl EchoCanceler {
 
         // capture_frame_output is now ready to send to a remote peer.
         println!("Successfully processed a render and capture frame through WebRTC!");
+        capture_frame_output
     }
 }
