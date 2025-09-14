@@ -4,7 +4,7 @@ use fixed_resample::rubato::{Resampler, SincFixedOut, SincInterpolationParameter
 use log::{debug, info, trace};
 use opus::Encoder;
 use ringbuf::traits::Consumer;
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 use tokio::{sync::mpsc, task::yield_now, time::sleep};
 
 use crate::{
@@ -230,11 +230,15 @@ async fn main() {
                     // Process mic input to cancel echo from speaker output
                     // If the device is not 16kHz, we do not apply AEC, as the user is likely on
                     // a bluetooth HFP device which won't benefit from AEC.
+                    // If echo cancellation fails, we revert to the original mic input.
                     // TODO: improve the error handling here, should revert to original mic if AEC fails
                     if in_sample_rate >= OUT_SAMPLE_RATE && echo_cancellation_on {
-                        capture_frame = aec.cancel_speaker_echo(capture_frame, render_frame);
+                        let orig_capture = capture_frame.clone();
+                        capture_frame = aec
+                            .cancel_speaker_echo(capture_frame, render_frame)
+                            .unwrap_or(orig_capture);
                     } else {
-                        println!(
+                        info!(
                             "Skipping AEC because input sample rate is {}hz and echo cancellation is {}",
                             in_sample_rate,
                             if echo_cancellation_on { "on" } else { "off" }
@@ -479,6 +483,38 @@ fn create_transcript_stdout_task(mut transcript_rx: mpsc::UnboundedReceiver<Stri
             }
         }
     });
+}
+
+/// Takes two strings and returns true if they share more than three words in common (case insensitive).
+/// Used to detect if the mic transcript is echoing the sys transcript.
+/// # Arguments
+/// * `a` - The first string to compare
+/// * `b` - The second string to compare
+/// # Returns
+/// * `bool` - True if they share more than three words, false otherwise
+fn _share_more_than_three(a: &str, b: &str) -> bool {
+    let wa: HashSet<String> = a
+        .split_whitespace()
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+
+    let mut count = 0;
+    let mut matches: HashSet<String> = HashSet::new();
+
+    for word in b.split_whitespace().map(|w| w.to_ascii_lowercase()) {
+        if wa.contains(&word) {
+            count += 1; // preserve original semantics (counts duplicates)
+            matches.insert(word.clone());
+            if count > 3 {
+                println!("Shared words (>3): {:?}", matches);
+                return true;
+            }
+        }
+    }
+
+    // Print what (if anything) matched for debugging purposes
+    println!("Shared words ({}): {:?}", count, matches);
+    false
 }
 
 #[cfg(test)]
