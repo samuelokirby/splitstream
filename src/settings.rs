@@ -5,6 +5,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct Settings {
     pub compliance_mode_on_start: bool,
+    pub echo_cancellation: bool,
 }
 
 impl Settings {

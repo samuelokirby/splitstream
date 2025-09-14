@@ -32,6 +32,7 @@ async fn main() {
     let settings = Settings::new();
     // Keep track of whether compliance mode is on (system audio muted)
     let sys_muted = settings.compliance_mode_on_start;
+    let echo_cancellation_on = settings.echo_cancellation;
     // Print startup message for console
     print_splitstream_demo_msg();
     // Start by initializing a new aggregate device based on the user's default devices
@@ -222,14 +223,23 @@ async fn main() {
                         mute_buffer(&mut out_sys[..produced]);
                     }
 
-                    // *** NEW: Apply echo cancellation here ***
                     // Convert arrays to Vec<f32> for EchoCanceler (expects Vec)
                     let mut capture_frame: Vec<f32> = out_mic[..produced].to_vec();
                     let render_frame: Vec<f32> = out_sys[..produced].to_vec();
 
                     // Process mic input to cancel echo from speaker output
+                    // If the device is not 16kHz, we do not apply AEC, as the user is likely on
+                    // a bluetooth HFP device which won't benefit from AEC.
                     // TODO: improve the error handling here, should revert to original mic if AEC fails
-                    capture_frame = aec.cancel_speaker_echo(capture_frame, render_frame);
+                    if in_sample_rate >= OUT_SAMPLE_RATE && echo_cancellation_on {
+                        capture_frame = aec.cancel_speaker_echo(capture_frame, render_frame);
+                    } else {
+                        println!(
+                            "Skipping AEC because input sample rate is {}hz and echo cancellation is {}",
+                            in_sample_rate,
+                            if echo_cancellation_on { "on" } else { "off" }
+                        );
+                    }
 
                     // Copy processed mic back to out_mic array (truncate if needed)
                     out_mic[..produced].copy_from_slice(&capture_frame[..produced]);
