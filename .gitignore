@@ -2,3 +2,5 @@
 *.wav
 *.opus
 *.ogg
+.env
+models/
