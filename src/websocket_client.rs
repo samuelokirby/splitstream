@@ -116,7 +116,7 @@ impl WebSocketClient {
         let mut request = self.ws_url.clone().into_client_request().unwrap();
         request.headers_mut().insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.access_token)).unwrap(),
+            HeaderValue::from_str(&format!("Token {}", self.access_token)).unwrap(),
         );
         Ok(request)
     }
