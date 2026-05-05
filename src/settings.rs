@@ -14,15 +14,15 @@ fn default_whisper_window_seconds() -> u32 {
 pub struct Settings {
     pub compliance_mode_on_start: bool,
     pub echo_cancellation: bool,
-    /// "deepgram" or "whisper"
+    /// "deepgram", "whisper", or "parakeet"
     #[serde(default = "default_transcription_backend")]
     pub transcription_backend: String,
     #[serde(default)]
     pub whisper_model_path: String,
-    #[serde(default)]
-    pub whisper_vad_model_path: String,
     #[serde(default = "default_whisper_window_seconds")]
     pub whisper_window_seconds: u32,
+    #[serde(default)]
+    pub parakeet_model_dir: String,
 }
 
 impl Settings {

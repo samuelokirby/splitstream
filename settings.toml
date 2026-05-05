@@ -1,15 +1,17 @@
 
 compliance_mode_on_start = false # If true, system audio won't be captured until the user explicitly enables it
 echo_cancellation = true # If true, echo cancellation will be applied to microphone input
-# Transcription backend: "deepgram" (cloud, low latency) or "whisper" (local, offline)
-transcription_backend = "whisper"
+# Transcription backend: "deepgram" (cloud, low latency) | "whisper" (local) | "parakeet" (local, streaming)
+transcription_backend = "parakeet"
 
 # Required when transcription_backend = "whisper"
 whisper_model_path = "./models/ggml-small.en.bin"
-whisper_vad_model_path = "./models/ggml-silero-v6.2.0.bin"
 
 # Inference window in seconds. Tune to your model:
 #   tiny / base:        1–2
 #   small:              2–3
 #   large-v3-turbo:     4–5
 whisper_window_seconds = 3
+
+# Required when transcription_backend = "parakeet"
+parakeet_model_dir = "./models/parakeet-eou"

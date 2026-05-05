@@ -19,6 +19,7 @@ use crate::{
 
 pub mod echo_cancellation;
 pub mod local_transcriber;
+pub mod parakeet_transcriber;
 pub mod settings;
 pub mod sys_audio_tap;
 pub mod transcript_msg;
@@ -33,11 +34,17 @@ enum TranscriptionBackend {
         mic_pcm_tx: std::sync::mpsc::Sender<Vec<f32>>,
         sys_pcm_tx: std::sync::mpsc::Sender<Vec<f32>>,
     },
+    Parakeet {
+        mic_pcm_tx: std::sync::mpsc::Sender<Vec<f32>>,
+        sys_pcm_tx: std::sync::mpsc::Sender<Vec<f32>>,
+    },
 }
 
 // 0.5 seconds of 16kHz mono PCM per batch sent to the Whisper thread.
 // The transcriber accumulates 4 of these (2s) before running inference.
 const WHISPER_BATCH_SAMPLES: usize = OUT_SAMPLE_RATE as usize / 2; // 8_000
+// 160ms chunks — matches ParakeetEOU's expected chunk size.
+const PARAKEET_BATCH_SAMPLES: usize = 2_560;
 
 const OUT_SAMPLE_RATE: u32 = 16_000;
 const FINAL_FRAME_SIZE: usize = 320; // 20ms @ 16kHz
@@ -60,14 +67,14 @@ async fn main() {
     let mic_supported_config = mic_device
         .default_input_config()
         .expect("no default input config");
-    let mic_sample_rate = mic_supported_config.sample_rate();
+    let mut mic_sample_rate = mic_supported_config.sample_rate();
     let mic_channels = mic_supported_config.channels() as usize;
     let mic_stream_config: StreamConfig = mic_supported_config.config();
 
     let mic_rb = HeapRb::<f32>::new(8192);
     let (mut mic_prod, mut mic_cons) = mic_rb.split();
 
-    let mic_stream = mic_device
+    let mut mic_stream = mic_device
         .build_input_stream(
             &mic_stream_config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -97,7 +104,7 @@ async fn main() {
     // The tap's ASBD gives the authoritative sample rate — no guessing.
     let (_sys_tap, mut sys_cons) =
         SysAudioTap::new().expect("failed to create sys audio tap");
-    let sys_sample_rate = _sys_tap.sample_rate;
+    let mut sys_sample_rate = _sys_tap.sample_rate;
 
     info!(
         "Mic: {}ch @ {}hz | Sys: @ {}hz (from tap ASBD)",
@@ -114,11 +121,16 @@ async fn main() {
     let mut aec = EchoCanceler::new();
 
     let mut transcription_backend = match settings.transcription_backend.as_str() {
+        "parakeet" => {
+            info!("Transcription backend: Nemotron (parakeet-rs)");
+            let (mic_pcm_tx, sys_pcm_tx) =
+                parakeet_transcriber::spawn(&settings.parakeet_model_dir).await;
+            TranscriptionBackend::Parakeet { mic_pcm_tx, sys_pcm_tx }
+        }
         "whisper" => {
             info!("Transcription backend: local Whisper");
             let (mic_pcm_tx, sys_pcm_tx) = local_transcriber::spawn(
                 &settings.whisper_model_path,
-                &settings.whisper_vad_model_path,
                 settings.whisper_window_seconds as usize * 16_000,
             );
             TranscriptionBackend::Whisper { mic_pcm_tx, sys_pcm_tx }
@@ -154,10 +166,10 @@ async fn main() {
     let confirm_msg = "✅ Recording. Press Ctrl+C to stop.".green().bold();
     println!("{}", confirm_msg);
 
-    // Audio accumulators for the Whisper path — filled each tick and flushed
-    // every WHISPER_BATCH_SAMPLES so we send 1s chunks instead of 20ms chunks.
-    let mut whisper_mic_buf: Vec<f32> = Vec::new();
-    let mut whisper_sys_buf: Vec<f32> = Vec::new();
+    // Audio accumulators for local backends (Whisper, Parakeet) — filled each
+    // tick and flushed at the backend-specific batch threshold.
+    let mut local_mic_buf: Vec<f32> = Vec::new();
+    let mut local_sys_buf: Vec<f32> = Vec::new();
 
     // Drive encoding from a 20ms interval timer — matching the Opus frame size exactly.
     // This gives a stable 50 Hz packet rate, yields to the Tokio runtime on every tick
@@ -176,6 +188,20 @@ async fn main() {
     // Track whether we've warned about AEC being skipped so we don't spam logs.
     let mut aec_skip_warned = false;
 
+    // Mid-stream sample-rate adaptation.
+    //
+    // Mic: CoreAudio invalidates the cpal stream when the device rate changes,
+    // so samples stop flowing and drain-count estimation can't detect the change.
+    // Instead we poll the default input device's config every second and rebuild
+    // the entire cpal stream (ring buffer + stream) when the rate differs.
+    //
+    // Sys: the IOProc continues running at the new rate (the aggregate device
+    // clock source is the mic, which CoreAudio keeps alive). Drain-count
+    // estimation works fine here — total samples drained in 1 s ≈ sample rate.
+    let mut sys_rate_acc: u64 = 0;
+    let mut rate_ticks: u32 = 0;
+    const RATE_CHECK_TICKS: u32 = 50; // 50 × 20 ms = 1 s
+
     loop {
         frame_tick.tick().await;
 
@@ -191,6 +217,68 @@ async fn main() {
         if n > 0 {
             trace!("{:3} 📣 sys samples drained", n);
             sys_input_buf.extend_from_slice(&tmp[..n]);
+            sys_rate_acc += n as u64;
+        }
+        rate_ticks += 1;
+        if rate_ticks >= RATE_CHECK_TICKS {
+            // --- Mic: poll device config and rebuild stream if rate changed ---
+            if let Some(device) = cpal::default_host().default_input_device() {
+                if let Ok(cfg) = device.default_input_config() {
+                    let current_rate = cfg.sample_rate();
+                    if current_rate != mic_sample_rate {
+                        let new_channels = cfg.channels() as usize;
+                        let stream_config: StreamConfig = cfg.config();
+                        let new_rb = HeapRb::<f32>::new(8192);
+                        let (mut new_prod, new_cons) = new_rb.split();
+                        match device.build_input_stream(
+                            &stream_config,
+                            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                if new_channels == 1 {
+                                    new_prod.push_slice(data);
+                                } else {
+                                    let mono: Vec<f32> = data
+                                        .chunks(new_channels)
+                                        .map(|frame| frame.iter().sum::<f32>() / new_channels as f32)
+                                        .collect();
+                                    new_prod.push_slice(&mono);
+                                }
+                            },
+                            |err| eprintln!("Mic stream error: {err}"),
+                            None,
+                        ) {
+                            Ok(stream) => {
+                                info!(
+                                    "Mic rate change: {}Hz → {}Hz, rebuilding stream",
+                                    mic_sample_rate, current_rate
+                                );
+                                mic_stream = stream;
+                                mic_cons = new_cons;
+                                mic_sample_rate = current_rate;
+                                mic_resampler = build_resampler(mic_sample_rate);
+                                mic_input_buf.clear();
+                                mic_stream.play().expect("failed to start mic stream");
+                            }
+                            Err(e) => eprintln!("Failed to rebuild mic stream: {e}"),
+                        }
+                    }
+                }
+            }
+
+            // --- Sys: drain-count estimation (IOProc keeps running at new rate) ---
+            if sys_rate_acc > 0 {
+                let inferred = snap_to_standard_rate(sys_rate_acc as u32);
+                if inferred != sys_sample_rate {
+                    info!(
+                        "Sys audio rate change detected: {}Hz → {}Hz, rebuilding resampler",
+                        sys_sample_rate, inferred
+                    );
+                    sys_sample_rate = inferred;
+                    sys_resampler = build_resampler(sys_sample_rate);
+                    sys_input_buf.clear();
+                }
+            }
+            sys_rate_acc = 0;
+            rate_ticks = 0;
         }
 
         // Cap each buffer to at most 2 frames to prevent latency accumulating if
@@ -271,15 +359,32 @@ async fn main() {
                 }
             }
             TranscriptionBackend::Whisper { mic_pcm_tx, sys_pcm_tx } => {
-                whisper_mic_buf.extend_from_slice(&out_mic);
-                whisper_sys_buf.extend_from_slice(&out_sys);
-                if whisper_mic_buf.len() >= WHISPER_BATCH_SAMPLES {
-                    mic_pcm_tx.send(std::mem::take(&mut whisper_mic_buf)).ok();
-                    sys_pcm_tx.send(std::mem::take(&mut whisper_sys_buf)).ok();
+                local_mic_buf.extend_from_slice(&out_mic);
+                local_sys_buf.extend_from_slice(&out_sys);
+                if local_mic_buf.len() >= WHISPER_BATCH_SAMPLES {
+                    mic_pcm_tx.send(std::mem::take(&mut local_mic_buf)).ok();
+                    sys_pcm_tx.send(std::mem::take(&mut local_sys_buf)).ok();
+                }
+            }
+            TranscriptionBackend::Parakeet { mic_pcm_tx, sys_pcm_tx } => {
+                local_mic_buf.extend_from_slice(&out_mic);
+                local_sys_buf.extend_from_slice(&out_sys);
+                while local_mic_buf.len() >= PARAKEET_BATCH_SAMPLES {
+                    mic_pcm_tx.send(local_mic_buf[..PARAKEET_BATCH_SAMPLES].to_vec()).ok();
+                    sys_pcm_tx.send(local_sys_buf[..PARAKEET_BATCH_SAMPLES].to_vec()).ok();
+                    local_mic_buf.drain(0..PARAKEET_BATCH_SAMPLES);
+                    local_sys_buf.drain(0..PARAKEET_BATCH_SAMPLES);
                 }
             }
         }
     }
+}
+
+/// Map an observed sample count (samples drained in 1 second) to the nearest
+/// standard audio sample rate. Handles mid-stream Bluetooth codec switches.
+fn snap_to_standard_rate(observed: u32) -> u32 {
+    const RATES: &[u32] = &[8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000];
+    *RATES.iter().min_by_key(|&&r| r.abs_diff(observed)).unwrap()
 }
 
 fn mute_buffer(buffer: &mut [f32]) {
