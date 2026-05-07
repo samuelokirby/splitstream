@@ -2,6 +2,12 @@
 name = "splitstream"
 version = "0.1.0"
 edition = "2024"
+description = "Real-time microphone and system audio transcription for macOS, with echo cancellation and multiple backends (Deepgram, Whisper, Parakeet)."
+license = "MIT"
+repository = "https://github.com/samuelokirby/splitstream"
+keywords = ["audio", "transcription", "speech-to-text", "macos", "coreaudio"]
+categories = ["multimedia::audio", "api-bindings"]
+readme = "README.md"
 
 [lib]
 name = "splitstream"
@@ -18,7 +24,7 @@ parakeet = ["dep:parakeet-rs"]
 
 [dependencies]
 aec-rs = "1.0.0"
-cidre = { git = "https://github.com/yury/cidre", rev = "a5ce94f2600f096b13a8eefde1dbbce9dff89064" }
+cidre = "0.15"
 chrono = "0.4.42"
 colored = "3.0.0"
 config = "0.15.15"
