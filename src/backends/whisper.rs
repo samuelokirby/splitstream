@@ -1,16 +1,17 @@
-// src/local_transcriber.rs
-//! Local Whisper transcription via two independent inference threads.
+//! Local Whisper transcription backend via whisper-rs (Metal).
 //!
 //! Each channel (mic, sys) gets its own WhisperContext so Metal/GPU calls can
-//! run concurrently. Each thread drains all available audio, waits until the
-//! rolling buffer reaches `window_samples`, runs full inference, then clears
-//! the buffer and repeats.
+//! run concurrently. Each thread accumulates audio until `window_samples` is
+//! reached, runs full inference, drains segments, and repeats.
 
 use std::mem;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 
+use tokio::sync::mpsc::UnboundedSender;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+use crate::transcript::{AudioSource, Transcript};
 
 /// Returns true for Whisper's standard non-speech hallucinations.
 fn is_artifact(text: &str) -> bool {
@@ -19,17 +20,26 @@ fn is_artifact(text: &str) -> bool {
     }
     matches!(
         text,
-        "you" | "You" | "Thank you." | "Thanks." | "Thanks for watching."
+        "you"
+            | "You"
+            | "Thank you."
+            | "Thanks."
+            | "Thanks for watching."
             | "Thank you for watching."
     )
 }
 
 fn spawn_channel(
-    label: &'static str,
+    source: AudioSource,
     model_path: String,
     window_samples: usize,
+    transcript_tx: UnboundedSender<Transcript>,
 ) -> Sender<Vec<f32>> {
     let (tx, rx) = channel::<Vec<f32>>();
+    let label = match source {
+        AudioSource::Mic => "mic",
+        AudioSource::Sys => "sys",
+    };
 
     thread::Builder::new()
         .name(format!("whisper-{label}"))
@@ -42,8 +52,6 @@ fn spawn_channel(
 
             while let Ok(first) = rx.recv() {
                 buf.extend(first);
-
-                // Drain everything else that arrived while we were waiting.
                 while let Ok(more) = rx.try_recv() {
                     buf.extend(more);
                 }
@@ -72,7 +80,11 @@ fn spawn_channel(
                         if let Ok(text) = seg.to_str() {
                             let text = text.trim();
                             if !text.is_empty() && !is_artifact(text) {
-                                println!("{} {}", label, text);
+                                let _ = transcript_tx.send(Transcript {
+                                    source,
+                                    text: text.to_string(),
+                                    is_final: true,
+                                });
                             }
                         }
                     }
@@ -84,10 +96,24 @@ fn spawn_channel(
     tx
 }
 
-/// Spawns two independent Whisper inference threads, one per channel.
+/// Spawns two independent Whisper inference threads (mic + sys).
 /// Returns `(mic_sender, sys_sender)` — drop both to shut the threads down.
-pub fn spawn(model_path: &str, window_samples: usize) -> (Sender<Vec<f32>>, Sender<Vec<f32>>) {
-    let mic_tx = spawn_channel("🎙️", model_path.to_string(), window_samples);
-    let sys_tx = spawn_channel("🔊", model_path.to_string(), window_samples);
+pub(crate) fn spawn(
+    model_path: &str,
+    window_samples: usize,
+    transcript_tx: UnboundedSender<Transcript>,
+) -> (Sender<Vec<f32>>, Sender<Vec<f32>>) {
+    let mic_tx = spawn_channel(
+        AudioSource::Mic,
+        model_path.to_string(),
+        window_samples,
+        transcript_tx.clone(),
+    );
+    let sys_tx = spawn_channel(
+        AudioSource::Sys,
+        model_path.to_string(),
+        window_samples,
+        transcript_tx,
+    );
     (mic_tx, sys_tx)
 }
