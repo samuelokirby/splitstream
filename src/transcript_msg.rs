@@ -43,3 +43,61 @@ impl TranscriptMessage {
         self.channel_index.as_ref().and_then(|ci| ci.first().copied())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_from_results_message() {
+        let json = r#"{
+            "type": "Results",
+            "channel_index": [0, 2],
+            "is_final": true,
+            "channel": {
+                "alternatives": [{"transcript": "hello world", "confidence": 0.99}]
+            }
+        }"#;
+        let msg: TranscriptMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "Results");
+        assert!(msg.is_final);
+        assert_eq!(msg.transcript(), Some("hello world"));
+        assert_eq!(msg.channel_num(), Some(0));
+    }
+
+    #[test]
+    fn transcript_returns_none_without_channel() {
+        let json = r#"{"type": "Results", "is_final": false}"#;
+        let msg: TranscriptMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.transcript().is_none());
+        assert!(msg.channel_num().is_none());
+    }
+
+    #[test]
+    fn transcript_returns_none_for_empty_alternatives() {
+        let json = r#"{
+            "type": "Results",
+            "channel_index": [1, 2],
+            "is_final": true,
+            "channel": {"alternatives": []}
+        }"#;
+        let msg: TranscriptMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.transcript().is_none());
+        assert_eq!(msg.channel_num(), Some(1));
+    }
+
+    #[test]
+    fn channel_num_returns_none_for_empty_index() {
+        let json = r#"{"type": "Results", "channel_index": [], "is_final": false}"#;
+        let msg: TranscriptMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.channel_num().is_none());
+    }
+
+    #[test]
+    fn non_results_message_has_no_channel() {
+        let json = r#"{"type": "Metadata", "is_final": false}"#;
+        let msg: TranscriptMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.msg_type, "Metadata");
+        assert!(msg.channel.is_none());
+    }
+}

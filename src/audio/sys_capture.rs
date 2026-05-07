@@ -1,4 +1,4 @@
-// src/sys_audio_tap.rs
+// src/audio/sys_capture.rs
 //! Captures system audio output via a CoreAudio process tap using cidre.
 //!
 //! Creates a global process tap and wraps it in an aggregate device that uses
@@ -105,7 +105,6 @@ impl SysAudioTap {
         // IOProc: the aggregate device provides one AudioBuffer per sub-device.
         // Buffer 0 = mic (ignored — cpal handles mic).
         // Last buffer = sys tap audio (mono f32 from the process tap).
-        // Raw pointer access matches the original working implementation.
         extern "C" fn proc(
             _device: ca::Device,
             _now: &cat::AudioTimeStamp,
