@@ -82,4 +82,25 @@ mod tests {
         let res = change_resampler_in_rate(&mut resampler, 0);
         assert!(res.is_err());
     }
+
+    #[test]
+    fn snap_exact_standard_rates() {
+        assert_eq!(snap_to_standard_rate(48_000), 48_000);
+        assert_eq!(snap_to_standard_rate(44_100), 44_100);
+        assert_eq!(snap_to_standard_rate(16_000), 16_000);
+        assert_eq!(snap_to_standard_rate(8_000), 8_000);
+    }
+
+    #[test]
+    fn snap_rounds_to_nearest() {
+        // 46000: |46000-44100|=1900 < |46000-48000|=2000 → 44100
+        assert_eq!(snap_to_standard_rate(46_000), 44_100);
+        // 47000: |47000-48000|=1000 < |47000-44100|=2900 → 48000
+        assert_eq!(snap_to_standard_rate(47_000), 48_000);
+    }
+
+    #[test]
+    fn snap_near_zero_returns_lowest_rate() {
+        assert_eq!(snap_to_standard_rate(100), 8_000);
+    }
 }

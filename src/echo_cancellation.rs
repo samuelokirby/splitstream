@@ -171,3 +171,97 @@ impl EchoCanceler {
         Ok(capture_frame)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn aec() -> EchoCanceler {
+        EchoCanceler::new()
+    }
+
+    fn silent(n: usize) -> Vec<f32> {
+        vec![0.0f32; n]
+    }
+
+    #[test]
+    fn empty_frame_returns_error() {
+        let ec = aec();
+        let mut out = vec![];
+        assert!(matches!(
+            ec.cancel_echo_f32(&[], &[], &mut out),
+            Err(EchoCancelError::EmptyFrame)
+        ));
+    }
+
+    #[test]
+    fn mismatched_lengths_returns_error() {
+        let ec = aec();
+        let rec = silent(320);
+        let echo = silent(319);
+        let mut out = silent(320);
+        assert!(matches!(
+            ec.cancel_echo_f32(&rec, &echo, &mut out),
+            Err(EchoCancelError::BufferLengthMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn wrong_frame_size_returns_error() {
+        let ec = aec();
+        let buf = silent(100);
+        let mut out = silent(100);
+        assert!(matches!(
+            ec.cancel_echo_f32(&buf, &buf, &mut out),
+            Err(EchoCancelError::InvalidFrameSize { .. })
+        ));
+    }
+
+    #[test]
+    fn nan_in_rec_returns_error() {
+        let ec = aec();
+        let mut rec = silent(320);
+        rec[0] = f32::NAN;
+        let echo = silent(320);
+        let mut out = silent(320);
+        assert!(matches!(
+            ec.cancel_echo_f32(&rec, &echo, &mut out),
+            Err(EchoCancelError::NonFiniteInput)
+        ));
+    }
+
+    #[test]
+    fn inf_in_echo_returns_error() {
+        let ec = aec();
+        let rec = silent(320);
+        let mut echo = silent(320);
+        echo[10] = f32::INFINITY;
+        let mut out = silent(320);
+        assert!(matches!(
+            ec.cancel_echo_f32(&rec, &echo, &mut out),
+            Err(EchoCancelError::NonFiniteInput)
+        ));
+    }
+
+    #[test]
+    fn silent_render_bypass_copies_input() {
+        let ec = aec();
+        let mut rec = silent(320);
+        rec[5] = 0.5;
+        rec[100] = -0.3;
+        let echo = silent(320); // all-zero render
+        let mut out = silent(320);
+        ec.cancel_echo_f32(&rec, &echo, &mut out).unwrap();
+        assert_eq!(out, rec);
+    }
+
+    #[test]
+    fn valid_frame_returns_ok() {
+        let ec = aec();
+        let rec = silent(320);
+        let mut echo = silent(320);
+        echo[0] = 0.1; // non-zero so AEC actually runs
+        let mut out = silent(320);
+        assert!(ec.cancel_echo_f32(&rec, &echo, &mut out).is_ok());
+    }
+}

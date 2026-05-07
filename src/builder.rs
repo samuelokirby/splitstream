@@ -184,3 +184,15 @@ impl Default for SplitStreamBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SplitStreamError;
+
+    #[tokio::test]
+    async fn no_backend_returns_error() {
+        let result = SplitStreamBuilder::new().start().await;
+        assert!(matches!(result, Err(SplitStreamError::NoBackend)));
+    }
+}
