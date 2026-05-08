@@ -4,3 +4,4 @@
 *.ogg
 .env
 models/
+CLAUDE.md
