@@ -1,5 +1,9 @@
 # ⑂ Splitstream
 
+<p align="center">
+  <img src="assets/ss-concept-art.png" alt="Splitstream" />
+</p>
+
 Realtime native MacOS speech-to-text transcription library for mic and system audio simultaneously. Supports NVIDIA's Parakeet EOU (end-of-utterance) steaming model 🦜 and Deepgram.
 
 ## How it works
