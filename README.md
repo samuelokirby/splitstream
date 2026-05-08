@@ -4,7 +4,7 @@
   <img src="assets/ss-concept-art.png" alt="Splitstream" />
 </p>
 
-Realtime native MacOS speech-to-text transcription library for mic and system audio simultaneously. Supports NVIDIA's Parakeet EOU (end-of-utterance) steaming model 🦜 and Deepgram.
+Realtime (local & cloud) native MacOS speech-to-text transcription library for mic and system audio simultaneously. Supports NVIDIA's Parakeet EOU (end-of-utterance) steaming model 🦜 and Deepgram.
 
 ## How it works
 Splitstream taps into MacOS' low-level CoreAudio APIs via [cidre](https://crates.io/crates/cidre) to record system output. Optional echo cancellation powered by [SpeexDSP](https://github.com/xiph/speexdsp) keeps the mic channel clean even when audio is playing through speakers. Audio samples from both the mic and system audio are sent to a transcription model simulatenously and non-blocking.
