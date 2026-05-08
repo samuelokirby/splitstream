@@ -17,8 +17,12 @@ path = "src/lib.rs"
 name = "splitstream"
 path = "src/bin/splitstream.rs"
 
+[[bin]]
+name = "download-parakeet"
+path = "src/bin/download_parakeet.rs"
+
 [features]
-default = ["whisper", "parakeet"]
+default = ["parakeet"]
 whisper  = ["dep:whisper-rs"]
 parakeet = ["dep:parakeet-rs"]
 
