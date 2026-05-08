@@ -67,7 +67,7 @@ tokio = { version = "1", features = ["full"] }
 
 
 ```rust
-# main.rs
+// main.rs
 use splitstream::{AudioSource, SplitStreamBuilder};
 
 #[tokio::main]
