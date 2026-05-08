@@ -141,7 +141,7 @@ cargo run
 Configure it via `settings.toml` in the working directory:
 
 ```toml
-transcription_backend = "parakeet"   # "parakeet" | "deepgram" | "whisper"
+transcription_backend = "parakeet"   # "parakeet" | "deepgram"
 echo_cancellation = true
 compliance_mode_on_start = false     # start with sys audio muted
 
@@ -149,10 +149,6 @@ parakeet_model_dir = "./models/parakeet-eou"
 
 # Required for Deepgram — or set DEEPGRAM_API_KEY in your environment
 # api_key = "..."
-
-# Required for Whisper
-whisper_model_path = "./models/ggml-small.en.bin"
-whisper_window_seconds = 3
 ```
 
 ![PLACEHOLDER: settings.toml open in an editor](placeholder-settings.png)
