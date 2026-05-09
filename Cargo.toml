@@ -1,8 +1,8 @@
 [package]
 name = "splitstream"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
-description = "Real-time microphone and system audio transcription for macOS, with echo cancellation and multiple backends (Deepgram, Whisper, Parakeet)."
+description = "Real-time (local & cloud) simultaneous microphone and system audio transcription for macOS."
 license = "MIT"
 repository = "https://github.com/samuelokirby/splitstream"
 keywords = ["audio", "transcription", "speech-to-text", "macos", "system-audio"]
