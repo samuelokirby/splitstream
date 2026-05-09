@@ -155,8 +155,6 @@ parakeet_model_dir = "./models/parakeet-eou"
 # api_key = "..."
 ```
 
-![PLACEHOLDER: settings.toml open in an editor](placeholder-settings.png)
-
 ---
 
 ## Feature flags

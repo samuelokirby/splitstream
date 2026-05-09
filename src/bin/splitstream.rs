@@ -105,5 +105,5 @@ fn print_banner() {
     ";
     println!("\n\n{}", banner.bright_blue());
     println!("\t\tDemo");
-    println!("\t\t© Secretary Corporation 2024-2025, all rights reserved.")
+    println!("\t\t© 2026 samuelokirby")
 }
