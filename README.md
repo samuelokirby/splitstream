@@ -168,8 +168,9 @@ parakeet_model_dir = "./models/parakeet-eou"
 
 ## License
 
-Splitstream is licensed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).
+Splitstream is dual-licensed:
 
-You are free to use, modify, and distribute this software under the terms of the AGPL-3.0. If you use Splitstream in a commercial product or service, the AGPL requires that you open-source your entire application under the same license.
+- **Open source / individuals** — [AGPL-3.0](LICENSE). Free to use, modify, and distribute, provided your application is also released under AGPL-3.0.
+- **Commercial use** — If you want to use Splitstream in a proprietary product without open-sourcing your code, a commercial license is required. Contact [retaildiamond@gmail.com](mailto:retaildiamond@gmail.com).
 
-**For commercial use without open-sourcing your product, contact me to arrange a commercial license.**
+See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
