@@ -4,20 +4,21 @@
   <img src="assets/ss-concept-art.png" alt="Splitstream" />
 </p>
 
-Realtime (local & cloud) native MacOS speech-to-text transcription library for mic and system audio simultaneously. Supports NVIDIA's Parakeet EOU (end-of-utterance) steaming model 🦜 and Deepgram.
+Realtime MacOS speech-to-text library for performant microphone and system audio transcription. Supports local model transcription and Deepgram. Perfect for meeting apps, note takers, or ambient computing.
 
 ## How it works
-Splitstream taps into MacOS' low-level CoreAudio APIs via [cidre](https://crates.io/crates/cidre) to record system output. Optional echo cancellation powered by [SpeexDSP](https://github.com/xiph/speexdsp) keeps the mic channel clean even when audio is playing through speakers. Audio samples from both the mic and system audio are sent to a transcription model simulatenously and non-blocking.
+Splitstream uses MacOS' Audio Tap API with Rust bindings from [cidre](https://crates.io/crates/cidre) to capture system output. Elementary echo cancellation powered by [SpeexDSP](https://github.com/xiph/speexdsp) keeps the mic channel clean even when audio is playing through speakers at negliglible performance cost. 
+
+The result is multithreaded and non-blocking dual transcription that runs seamlessly on low-end devices.
 
 #### 🤖 AI Disclaimer
-*The crucial pieces of this library (core audio pipeline, audio capture, echo cancellation, transcription backend) were designed and written by a human. Docstrings and the refactoring that turned it into an importable Rust library was made with Claude.*
+*The crucial pieces of this library (core audio pipeline, audio capture, echo cancellation, transcription backend) were designed and written by a human. Docstrings and the refactoring that turned into a usable library was made with Claude.*
 
-## Requirements
+## Minimum Requirements
 
 - **macOS 14.2+**: the audio tap API used for system audio capture only works for macOS 14.2 and beyond
 - **Rust 1.80+**
 - **Xcode Command Line Tools**: required to compile the audio and ML dependencies
-
 
 
 ## Getting Started
@@ -25,26 +26,29 @@ Splitstream taps into MacOS' low-level CoreAudio APIs via [cidre](https://crates
 
 `cd example-project && cargo add splitstream`
 
-#### ☁️ Deepgram (blazing fast, premium)
-Instantiate Splitstream using `.with_deepgram(&api_key)` and provide your Deepgram API token.
+#### ☁️ Deepgram (cloud model, blazing fast)
+Instantiate Splitstream using `.with_deepgram(&api_key)` and pass in your Deepgram API token.
 ```rust
 use splitstream::{SplitStreamBuilder};
 
 let (handle, mut rx) = SplitStreamBuilder::new()
-        .with_deepgram("YOUR_DEEPGRAM_API_KEY_HERE")
-        .echo_cancellation(true)
+        .with_deepgram("YOUR_DEEPGRAM_API_KEY_HERE") // deepgram key here
+        .echo_cancellation(true) // optional AEC powered by SpeexDSP
         .start()
         .await
 ```
 
-#### 🦜Parakeet (local, free)
-Make a `models` directory and install NVIDIA's `parakeet-eou` model from HuggingFace's `parakeet-rs` repo.
+#### 🦜Parakeet (local, free, fast)
+To install NVIDIA's Parakeet model for use in Splitstream, start by running this cargo command:
 
 ```bash
 cargo run --bin download-parakeet
 ```
 
-Then, instantiate Splitstream using `with_parakeet(&model_path)` and provide the path to the Parakeet model. In this case, it is `models/parakeet-eou`.
+This creates a `models` folder in your project directory, as well as `models/parakeet–eou` that contains the three files needed to run Parakeet on your machine (decoder_joint.onnx, encoder.onnx, and tokenizer.json)
+
+
+Lastly, instantiate Splitstream using `with_parakeet(&model_path)` and provide the path to the Parakeet model. In this case, it is `models/parakeet-eou`.
 ```rust
 use splitstream::{SplitStreamBuilder};
 
@@ -73,7 +77,7 @@ use splitstream::{AudioSource, SplitStreamBuilder};
 #[tokio::main]
 async fn main() {
     let (handle, mut rx) = SplitStreamBuilder::new()
-        .with_parakeet("path/to/parakeet-eou") // see "Getting the model" below
+        .with_parakeet("models/parakeet-eou") // see "Getting the model" below
         .echo_cancellation(true) // enable SpeexDSP acoustic echo cancellation
         .start()
         .await
