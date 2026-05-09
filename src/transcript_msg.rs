@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct Alternative {
     pub transcript: String,
+    #[allow(dead_code)]
     pub confidence: f64,
 }
 
