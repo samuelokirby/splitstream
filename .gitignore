@@ -6,3 +6,5 @@
 models/
 CLAUDE.md
 .DS_Store
+.claude/
+vendor/
