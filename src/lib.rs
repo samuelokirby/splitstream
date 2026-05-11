@@ -22,7 +22,7 @@
 //!
 //! | Method | Backend | Cargo feature |
 //! |---|---|---|
-//! | `with_deepgram(api_key)` | Deepgram cloud (nova-3) | *(always available)* |
+//! | `with_deepgram(api_key)` | Deepgram cloud (nova-3) | `deepgram` |
 //! | `with_whisper(model_path)` | Local whisper-rs (Metal) | `whisper` |
 //! | `with_parakeet(model_dir)` | Local parakeet-rs (ONNX) | `parakeet` |
 
@@ -36,7 +36,9 @@ mod builder;
 mod handle;
 mod transcript;
 
-pub use builder::{DeepgramConfig, SplitStreamBuilder};
+pub use builder::SplitStreamBuilder;
+#[cfg(feature = "deepgram")]
+pub use builder::DeepgramConfig;
 pub use handle::SplitStreamHandle;
 pub use transcript::{AudioSource, Transcript};
 

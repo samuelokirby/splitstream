@@ -60,11 +60,16 @@ async fn main() {
                 window_seconds: settings.whisper_window_seconds,
             });
         }
-        _ => {
+        #[cfg(feature = "deepgram")]
+        "deepgram" => {
             println!("Transcription backend: Deepgram");
             let api_key = std::env::var("DEEPGRAM_API_KEY")
                 .expect("DEEPGRAM_API_KEY not set — add it to .env or the environment");
             builder = builder.with_deepgram(api_key);
+        }
+        _ => {
+            eprintln!("Unknown or unsupported backend: '{}'. Enable the matching feature flag.", settings.transcription_backend);
+            std::process::exit(1);
         }
     }
 

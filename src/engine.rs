@@ -59,6 +59,7 @@ pub(crate) async fn run(
 
     // --- Backend initialization ---
     let mut backend_actor = match backend_spec {
+        #[cfg(feature = "deepgram")]
         BackendSpec::Deepgram(cfg) => {
             let ws_url = format!(
                 "wss://api.deepgram.com/v1/listen?encoding=opus&sample_rate=16000\
@@ -222,6 +223,7 @@ pub(crate) async fn run(
 
                 // --- Route to backend ---
                 match &mut backend_actor {
+                    #[cfg(feature = "deepgram")]
                     BackendActor::Deepgram { encoder, opus_packet_tx } => {
                         let mut interleaved = Vec::<f32>::with_capacity(FINAL_FRAME_SIZE * 2);
                         for i in 0..FINAL_FRAME_SIZE {

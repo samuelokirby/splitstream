@@ -18,7 +18,8 @@ The result is multithreaded and non-blocking dual transcription that runs seamle
 
 - **macOS 14.2+**: the audio tap API used for system audio capture only works for macOS 14.2 and beyond
 - **Rust 1.80+**
-- **Xcode Command Line Tools**: required to compile the audio and ML dependencies
+- **Xcode Command Line Tools**: `xcode-select --install`
+- **cmake**: `brew install cmake`
 
 
 ## Getting Started
@@ -27,6 +28,10 @@ The result is multithreaded and non-blocking dual transcription that runs seamle
 `cd example-project && cargo add splitstream`
 
 #### ☁️ Deepgram (cloud model, blazing fast)
+Requires the `deepgram` feature, which pulls in Opus encoding:
+
+`cargo add splitstream --features deepgram`
+
 Instantiate Splitstream using `.with_deepgram(&api_key)` and pass in your Deepgram API token.
 ```rust
 use splitstream::{SplitStreamBuilder};
@@ -162,6 +167,7 @@ parakeet_model_dir = "./models/parakeet-eou"
 | Flag | Default | What it gates |
 |---|---|---|
 | `parakeet` | ✅ on | Parakeet ONNX inference (pulls in ORT + ONNX Runtime) |
+| `deepgram` | ❌ off | Deepgram cloud backend (pulls in Opus, requires cmake) |
 | `whisper` | ❌ off | WIP |
 
 ---

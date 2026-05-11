@@ -12,6 +12,7 @@ use crate::SplitStreamError;
 // ---------------------------------------------------------------------------
 
 /// Configuration for the Deepgram streaming backend.
+#[cfg(feature = "deepgram")]
 pub struct DeepgramConfig {
     pub api_key: String,
     /// Deepgram model name (e.g. `"nova-3"`).
@@ -37,6 +38,7 @@ pub struct ParakeetConfig {
 // ---------------------------------------------------------------------------
 
 pub(crate) enum BackendSpec {
+    #[cfg(feature = "deepgram")]
     Deepgram(DeepgramConfig),
     #[cfg(feature = "whisper")]
     Whisper(WhisperConfig),
@@ -83,7 +85,8 @@ impl SplitStreamBuilder {
 
     // --- Backend selection ---
 
-    /// Use Deepgram cloud transcription with a Bearer API key.
+    /// Use Deepgram cloud transcription with a Bearer API key (requires `deepgram` feature).
+    #[cfg(feature = "deepgram")]
     pub fn with_deepgram(mut self, api_key: impl Into<String>) -> Self {
         self.backend = Some(BackendSpec::Deepgram(DeepgramConfig {
             api_key: api_key.into(),
@@ -92,7 +95,8 @@ impl SplitStreamBuilder {
         self
     }
 
-    /// Use Deepgram with full configuration control.
+    /// Use Deepgram with full configuration control (requires `deepgram` feature).
+    #[cfg(feature = "deepgram")]
     pub fn with_deepgram_config(mut self, config: DeepgramConfig) -> Self {
         self.backend = Some(BackendSpec::Deepgram(config));
         self
