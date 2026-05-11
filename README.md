@@ -19,76 +19,43 @@ The result is multithreaded and non-blocking dual transcription that runs seamle
 - **macOS 14.2+**: the audio tap API used for system audio capture only works for macOS 14.2 and beyond
 - **Rust 1.80+**
 - **Xcode Command Line Tools**: `xcode-select --install`
-- **cmake**: `brew install cmake`
 
 
 ## Getting Started
-1. Install Splitstream on your Rust project
 
-`cd example-project && cargo add splitstream`
+### 🦜 Parakeet (local, free, fast)
 
-#### ☁️ Deepgram (cloud model, blazing fast)
-Requires the `deepgram` feature, which pulls in Opus encoding:
+Parakeet is the default backend. There is no API key, no cloud, runs entirely on your machine.
 
-`cargo add splitstream --features deepgram`
-
-Instantiate Splitstream using `.with_deepgram(&api_key)` and pass in your Deepgram API token.
-```rust
-use splitstream::{SplitStreamBuilder};
-
-let (handle, mut rx) = SplitStreamBuilder::new()
-        .with_deepgram("YOUR_DEEPGRAM_API_KEY_HERE") // deepgram key here
-        .echo_cancellation(true) // optional AEC powered by SpeexDSP
-        .start()
-        .await
-```
-
-#### 🦜Parakeet (local, free, fast)
-To install NVIDIA's Parakeet model for use in Splitstream, start by running this cargo command:
+**Step 1.** Add splitstream to your project:
 
 ```bash
-cargo run --bin download-parakeet
+cargo add splitstream
 ```
 
-This creates a `models` folder in your project directory, as well as `models/parakeet–eou` that contains the three files needed to run Parakeet on your machine (decoder_joint.onnx, encoder.onnx, and tokenizer.json)
+**Step 2.** Download the Parakeet model and run `download-parakeet` (one-time setup, ~500MB):
 
-
-Lastly, instantiate Splitstream using `with_parakeet(&model_path)` and provide the path to the Parakeet model. In this case, it is `models/parakeet-eou`.
-```rust
-use splitstream::{SplitStreamBuilder};
-
-let (handle, mut rx) = SplitStreamBuilder::new()
-        .with_parakeet("models/parakeet-eou")
-        .echo_cancellation(true)
-        .start()
-        .await
-        .expect("failed to start splitstream");
+```bash
+cargo install splitstream --bin download-parakeet
+download-parakeet
 ```
 
-## Example
+This downloads the three model files (`encoder.onnx`, `decoder_joint.onnx`, `tokenizer.json`) into `./models/parakeet-eou/` in your current directory.
 
-```toml
-# Cargo.toml
-[dependencies]
-splitstream = { git = "https://github.com/samuelokirby/splitstream" }
-tokio = { version = "1", features = ["full"] }
-```
-
+**Step 3.** Use it in your code:
 
 ```rust
-// main.rs
 use splitstream::{AudioSource, SplitStreamBuilder};
 
 #[tokio::main]
 async fn main() {
     let (handle, mut rx) = SplitStreamBuilder::new()
-        .with_parakeet("models/parakeet-eou") // see "Getting the model" below
-        .echo_cancellation(true) // enable SpeexDSP acoustic echo cancellation
+        .with_parakeet("models/parakeet-eou")
+        .echo_cancellation(true)
         .start()
         .await
         .expect("failed to start splitstream");
 
-    // Clean shutdown on Ctrl+C
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
         handle.shutdown();
@@ -96,8 +63,66 @@ async fn main() {
 
     while let Some(t) = rx.recv().await {
         let label = match t.source {
-            AudioSource::Mic => "[🎤   Microphone] ",
-            AudioSource::Sys => "[🖥️ System Audio] ",
+            AudioSource::Mic => "[🎤   Microphone]",
+            AudioSource::Sys => "[🖥️ System Audio]",
+        };
+        println!("{} {}", label, t.text);
+    }
+}
+```
+
+---
+
+### ☁️ Deepgram (cloud, premium, blazing fast)
+
+Deepgram streams audio to the cloud and returns transcripts with very low latency. Requires a [Deepgram API key](https://console.deepgram.com/).
+
+> **Note:** Deepgram pulls in Opus encoding which requires cmake: `brew install cmake`
+
+**Step 1.** Add splitstream with the `deepgram` feature:
+
+```bash
+cargo add splitstream --features deepgram
+```
+
+**Step 2.** Set your API key (add to `.env` or export in your shell):
+
+```
+DEEPGRAM_API_KEY=your_key_here
+```
+
+**Step 3.** Use it in your Rust project:
+
+```toml
+# Cargo.toml
+[dependencies]
+splitstream = "0.1" # version may vary
+tokio = { version = "1.52.3", features = ["full"] } # version may vary
+```
+
+```rust
+use splitstream::{AudioSource, SplitStreamBuilder};
+
+#[tokio::main]
+async fn main() {
+    let api_key = std::env::var("DEEPGRAM_API_KEY").expect("DEEPGRAM_API_KEY not set");
+
+    let (handle, mut rx) = SplitStreamBuilder::new()
+        .with_deepgram(api_key)
+        .echo_cancellation(true)
+        .start()
+        .await
+        .expect("failed to start splitstream");
+
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        handle.shutdown();
+    });
+
+    while let Some(t) = rx.recv().await {
+        let label = match t.source {
+            AudioSource::Mic => "[🎤   Microphone]",
+            AudioSource::Sys => "[🖥️ System Audio]",
         };
         println!("{} {}", label, t.text);
     }
@@ -110,17 +135,16 @@ async fn main() {
 
 | Backend | Method | Feature flag | Notes |
 |---|---|---|---|
-| **Parakeet** | `.with_parakeet(model_dir)` | `parakeet` *(default)* | Local ONNX inference |
-| **Deepgram** | `.with_deepgram(api_key)` | *(always available)* | Cloud. Fastest, no local model needed. Requires API key. |
+| **Parakeet** | `.with_parakeet(model_dir)` | `parakeet` *(default)* | Local ONNX, no API key needed |
+| **Deepgram** | `.with_deepgram(api_key)` | `deepgram` | Cloud, requires API key + cmake |
 
-To use Deepgram only and skip compiling Parakeet:
+To use Deepgram only (skips compiling Parakeet/ONNX):
 
 ```toml
-splitstream = { git = "...", default-features = false }
+splitstream = { version = "0.1", default-features = false, features = ["deepgram"] }
 ```
 
 ---
-
 
 ## Mid-stream controls
 
@@ -136,16 +160,6 @@ handle.shutdown();                   // stop everything cleanly
 All of these take effect on the next 20ms tick and don't block.
 
 ---
-
-## Running the CLI binary
-
-If you just want to try it without writing any code, clone the repo and run it directly:
-
-```bash
-git clone https://github.com/samuelokirby/splitstream
-cd splitstream
-cargo run
-```
 
 Configure it via `settings.toml` in the working directory:
 
