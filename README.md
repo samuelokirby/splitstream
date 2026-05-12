@@ -42,7 +42,14 @@ download-parakeet
 
 This downloads the three model files (`encoder.onnx`, `decoder_joint.onnx`, `tokenizer.json`) into `./models/parakeet-eou/` in your current directory.
 
-**Step 3.** Use it in your code:
+**Step 3.** Use it in your Rust project:
+
+```toml
+# Cargo.toml
+[dependencies]
+splitstream = "0.1" # version may vary
+tokio = { version = "1.52.3", features = ["full"] } # version may vary
+```
 
 ```rust
 use splitstream::{AudioSource, SplitStreamBuilder};

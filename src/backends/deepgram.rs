@@ -78,6 +78,9 @@ async fn transmit(
                 break;
             }
         }
+        // Audio channel closed (shutdown) — send a graceful WebSocket close frame
+        // so Deepgram doesn't time out and log an error on their end.
+        let _ = ws_sender.send(Message::Close(None)).await;
     });
 
     let recv_task = tokio::spawn(async move {
@@ -94,7 +97,7 @@ async fn transmit(
                 }
                 Ok(Message::Close(frame)) => {
                     if let Some(cf) = frame {
-                        eprintln!("Deepgram WS closed: code={}, reason={}", cf.code, cf.reason);
+                        info!("Deepgram WS closed: code={}, reason={}", cf.code, cf.reason);
                     }
                     break;
                 }

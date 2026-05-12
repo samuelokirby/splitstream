@@ -41,17 +41,32 @@ pub(crate) async fn run(
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<(), SplitStreamError> {
     // --- Mic capture ---
-    let mut mic = mic_capture::setup()
-        .map_err(|_| SplitStreamError::NoMicDevice)?;
+    let mut mic = match mic_capture::setup() {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!(
+                "Warning: no default microphone found ({e}). \
+                 Recording system audio only. \
+                 To suppress, call .mic_muted(true) on the builder."
+            );
+            None
+        }
+    };
 
     // --- Sys capture ---
     let (_sys_tap, mut sys_cons) = sys_capture::SysAudioTap::new()
         .map_err(SplitStreamError::SysAudioTap)?;
     let mut sys_sample_rate = _sys_tap.sample_rate;
 
-    info!("Mic: {}hz | Sys: {}hz", mic.sample_rate, sys_sample_rate);
+    info!(
+        "Mic: {} | Sys: {}hz",
+        mic.as_ref().map_or("none".to_string(), |m| format!("{}hz", m.sample_rate)),
+        sys_sample_rate
+    );
 
-    let mut mic_resampler = resampler::build_resampler(mic.sample_rate);
+    let mut mic_resampler = resampler::build_resampler(
+        mic.as_ref().map_or(OUT_SAMPLE_RATE, |m| m.sample_rate)
+    );
     let mut sys_resampler = resampler::build_resampler(sys_sample_rate);
     let mut mic_input_buf: Vec<f32> = Vec::new();
     let mut sys_input_buf: Vec<f32> = Vec::new();
@@ -99,7 +114,7 @@ pub(crate) async fn run(
     // Drain any audio that accumulated during backend init.
     {
         let mut tmp = vec![0.0f32; 8192];
-        mic.consumer.pop_slice(&mut tmp);
+        if let Some(ref mut m) = mic { m.consumer.pop_slice(&mut tmp); }
         sys_cons.pop_slice(&mut tmp);
     }
 
@@ -119,9 +134,9 @@ pub(crate) async fn run(
             _ = frame_tick.tick() => {
                 // --- Drain ring buffers ---
                 let mut tmp = vec![0.0f32; 4096];
-                let n = mic.consumer.pop_slice(&mut tmp);
-                if n > 0 {
-                    mic_input_buf.extend_from_slice(&tmp[..n]);
+                if let Some(ref mut m) = mic {
+                    let n = m.consumer.pop_slice(&mut tmp);
+                    if n > 0 { mic_input_buf.extend_from_slice(&tmp[..n]); }
                 }
                 let n = sys_cons.pop_slice(&mut tmp);
                 if n > 0 {
@@ -133,9 +148,11 @@ pub(crate) async fn run(
                 rate_ticks += 1;
                 if rate_ticks >= RATE_CHECK_TICKS {
                     // Mic: poll device config; rebuild stream + resampler if rate changed.
-                    if mic_capture::maybe_rebuild(&mut mic) {
-                        mic_resampler = resampler::build_resampler(mic.sample_rate);
-                        mic_input_buf.clear();
+                    if let Some(ref mut m) = mic {
+                        if mic_capture::maybe_rebuild(m) {
+                            mic_resampler = resampler::build_resampler(m.sample_rate);
+                            mic_input_buf.clear();
+                        }
                     }
 
                     // Sys: drain-count estimation; rebuild resampler if rate changed.
@@ -206,7 +223,7 @@ pub(crate) async fn run(
                 let mut capture_frame = out_mic.to_vec();
                 let render_frame = out_sys.to_vec();
 
-                if mic.sample_rate >= OUT_SAMPLE_RATE
+                if mic.as_ref().map_or(false, |m| m.sample_rate >= OUT_SAMPLE_RATE)
                     && controls.echo_cancellation.load(Ordering::Relaxed)
                 {
                     let orig = capture_frame.clone();
