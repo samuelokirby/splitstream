@@ -19,6 +19,7 @@ The result is multithreaded and non-blocking dual transcription that runs seamle
 - **macOS 14.2+**: the audio tap API used for system audio capture only works for macOS 14.2 and beyond
 - **Rust 1.80+**
 - **Xcode Command Line Tools**: `xcode-select --install`
+- **cmake**: `brew install cmake` (required to compile audio dependencies)
 
 
 ## Getting Started

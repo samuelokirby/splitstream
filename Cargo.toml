@@ -1,6 +1,6 @@
 [package]
 name = "splitstream"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 description = "Real-time (local & cloud) simultaneous microphone and system audio transcription for macOS."
 license = "AGPL-3.0-only"
