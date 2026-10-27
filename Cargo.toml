@@ -2,7 +2,7 @@
 name = "splitstream"
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "macOS and Windows system audio and microphone capture in parallel, with echo cancellation and real-time transcription (local or cloud)."
 license = "MIT"
 repository = "https://github.com/samuelokirby/splitstream"

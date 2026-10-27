@@ -171,10 +171,10 @@ fn spawn_channel(
                             debug!("[{label}] silence — flushing and resetting model");
                             let silence = vec![0.0f32; 2560];
                             for _ in 0..3 {
-                                if let Ok(t) = parakeet.transcribe(&silence, false) {
-                                    if !t.trim().is_empty() {
-                                        text_buf.push_str(&t);
-                                    }
+                                if let Ok(t) = parakeet.transcribe(&silence, false)
+                                    && !t.trim().is_empty()
+                                {
+                                    text_buf.push_str(&t);
                                 }
                             }
                             flush(
@@ -193,10 +193,10 @@ fn spawn_channel(
                         debug!("[{label}] recv timeout — flushing and resetting model");
                         let silence = vec![0.0f32; 2560];
                         for _ in 0..3 {
-                            if let Ok(t) = parakeet.transcribe(&silence, false) {
-                                if !t.trim().is_empty() {
-                                    text_buf.push_str(&t);
-                                }
+                            if let Ok(t) = parakeet.transcribe(&silence, false)
+                                && !t.trim().is_empty()
+                            {
+                                text_buf.push_str(&t);
                             }
                         }
                         flush(

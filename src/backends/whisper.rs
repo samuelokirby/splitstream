@@ -118,22 +118,22 @@ fn spawn_channel(
 
                 let n = state.full_n_segments();
                 for i in 0..n {
-                    if let Some(seg) = state.get_segment(i) {
-                        if let Ok(text) = seg.to_str() {
-                            let text = text.trim();
-                            if !text.is_empty() && !is_artifact(text) {
-                                // whisper.cpp segment timestamps are relative to
-                                // the window, not the stream; attributing the
-                                // whole window is coarse but never wrong.
-                                let _ = transcript_tx.send(Transcript::new(
-                                    source,
-                                    text.to_string(),
-                                    true,
-                                    chunk_start,
-                                    chunk_end,
-                                    None,
-                                ));
-                            }
+                    if let Some(seg) = state.get_segment(i)
+                        && let Ok(text) = seg.to_str()
+                    {
+                        let text = text.trim();
+                        if !text.is_empty() && !is_artifact(text) {
+                            // whisper.cpp segment timestamps are relative to
+                            // the window, not the stream; attributing the
+                            // whole window is coarse but never wrong.
+                            let _ = transcript_tx.send(Transcript::new(
+                                source,
+                                text.to_string(),
+                                true,
+                                chunk_start,
+                                chunk_end,
+                                None,
+                            ));
                         }
                     }
                 }

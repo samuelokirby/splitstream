@@ -91,6 +91,13 @@ jobs:
   windows-test:
     name: windows test
     runs-on: windows-latest
+    env:
+      # The `cmake` crate probes for a Visual Studio generator and panics with
+      # "couldn't determine visual studio generator" in a plain runner shell,
+      # which has no MSVC developer environment activated. Both `aec-rs-sys`
+      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
+      # generator is enough; windows-latest ships VS 2022.
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -116,6 +123,13 @@ jobs:
   windows-clippy:
     name: windows clippy
     runs-on: windows-latest
+    env:
+      # The `cmake` crate probes for a Visual Studio generator and panics with
+      # "couldn't determine visual studio generator" in a plain runner shell,
+      # which has no MSVC developer environment activated. Both `aec-rs-sys`
+      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
+      # generator is enough; windows-latest ships VS 2022.
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -140,6 +154,13 @@ jobs:
   windows-features:
     name: windows check (${{ matrix.name }})
     runs-on: windows-latest
+    env:
+      # The `cmake` crate probes for a Visual Studio generator and panics with
+      # "couldn't determine visual studio generator" in a plain runner shell,
+      # which has no MSVC developer environment activated. Both `aec-rs-sys`
+      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
+      # generator is enough; windows-latest ships VS 2022.
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
     strategy:
       fail-fast: false
       matrix:
@@ -178,11 +199,11 @@ jobs:
       - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
 
   msrv:
-    name: MSRV 1.85
+    name: MSRV 1.88
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
       # `aec-rs-sys` builds speexdsp with cmake and is not optional, so even
       # the default feature set needs it.

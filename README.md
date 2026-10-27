@@ -27,7 +27,7 @@ The two channels stay apart the whole way through. Every transcript is tagged wi
 
 ## What you need
 
-**Rust 1.85 or newer** on either platform. The crate is edition 2024. Anything that is not macOS or Windows is a `compile_error!`, since there is no portable way to record system audio.
+**Rust 1.88 or newer** on either platform. Edition 2024 sets a 1.85 floor, but `cidre` (the macOS bindings) and `ort` (the ONNX runtime behind `parakeet`) both require 1.88. Anything that is not macOS or Windows is a `compile_error!`, since there is no portable way to record system audio.
 
 ### macOS
 
@@ -41,6 +41,7 @@ The two channels stay apart the whole way through. Every transcript is tagged wi
 - **The MSVC toolchain**, which `rustup` sets up by default with the `x86_64-pc-windows-msvc` target. The C parts of the build (SpeexDSP for echo cancellation, and Opus if you turn on `deepgram`) need it.
 - **cmake** on `PATH`, for the same reason as on macOS. Get it from [cmake.org](https://cmake.org/download/) or run `winget install Kitware.CMake`.
 - **LLVM**, because the echo canceller generates its Rust bindings with `bindgen`, and `bindgen` needs `libclang` at build time. Run `winget install LLVM.LLVM`. If the build still cannot find it, point it there with `setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"`. macOS needs no separate step for this: `libclang` comes with the Command Line Tools.
+- **Build from a Developer PowerShell for VS**, or set `CMAKE_GENERATOR`. The `cmake` crate probes for a Visual Studio generator and fails with `couldn't determine visual studio generator` in a plain shell that has no MSVC developer environment. Either open "Developer PowerShell for VS 2022" from the Start menu, or run `setx CMAKE_GENERATOR "Visual Studio 17 2022"` once. This affects the default build (SpeexDSP) and `deepgram` (Opus); a `--no-default-features` build needs neither.
 - Nothing to sign and no permission to grant for system audio. See [Permissions](#permissions--signing).
 
 > **On macOS you cannot skip the permissions.** macOS locks both the microphone and the system-audio tap behind TCC consent, and it gives that consent to a *signed bundle* rather than to a loose binary. Read [Permissions & Signing](#permissions--signing) before you decide splitstream is broken. On Windows there is nothing to grant for system audio and nothing to sign.

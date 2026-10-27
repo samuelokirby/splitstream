@@ -29,6 +29,7 @@
 #![cfg(feature = "parakeet")]
 
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -165,6 +166,9 @@ async fn speaks_system_audio_back_as_a_transcript() {
 }
 
 /// Muting system audio must actually stop transcripts from that source.
+///
+/// macOS only: it drives the speakers with `say`.
+#[cfg(target_os = "macos")]
 #[ignore = "needs audio hardware, TCC consent, speakers, and a downloaded model"]
 #[tokio::test]
 async fn muting_system_audio_stops_system_transcripts() {
