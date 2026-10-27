@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # CMake 4 removed compatibility with `cmake_minimum_required(<3.5)`, and the
+  # Opus that `audiopus_sys` vendors still declares 3.1. Without this the
+  # `deepgram` feature cannot build on any platform with CMake 4 installed.
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 # NOTE: `RUSTFLAGS: -D warnings` is deliberately *not* set globally. Cargo
 # applies RUSTFLAGS to dependencies as well, so a warning introduced by a new
 # rustc release in any transitive crate would turn CI red for reasons this
@@ -91,15 +95,13 @@ jobs:
   windows-test:
     name: windows test
     runs-on: windows-latest
-    env:
-      # The `cmake` crate probes for a Visual Studio generator and panics with
-      # "couldn't determine visual studio generator" in a plain runner shell,
-      # which has no MSVC developer environment activated. Both `aec-rs-sys`
-      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
-      # generator is enough; windows-latest ships VS 2022.
-      CMAKE_GENERATOR: "Visual Studio 17 2022"
     steps:
       - uses: actions/checkout@v4
+      # Activates the MSVC developer environment. Without it the `cmake` crate
+      # panics with "couldn't determine visual studio generator", and naming a
+      # generator explicitly only moves the error on to "could not find any
+      # instance of Visual Studio". aec-rs-sys and audiopus_sys both need it.
+      - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `aec-rs-sys` generates bindings with bindgen, which needs libclang. The
@@ -123,15 +125,13 @@ jobs:
   windows-clippy:
     name: windows clippy
     runs-on: windows-latest
-    env:
-      # The `cmake` crate probes for a Visual Studio generator and panics with
-      # "couldn't determine visual studio generator" in a plain runner shell,
-      # which has no MSVC developer environment activated. Both `aec-rs-sys`
-      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
-      # generator is enough; windows-latest ships VS 2022.
-      CMAKE_GENERATOR: "Visual Studio 17 2022"
     steps:
       - uses: actions/checkout@v4
+      # Activates the MSVC developer environment. Without it the `cmake` crate
+      # panics with "couldn't determine visual studio generator", and naming a
+      # generator explicitly only moves the error on to "could not find any
+      # instance of Visual Studio". aec-rs-sys and audiopus_sys both need it.
+      - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -154,13 +154,6 @@ jobs:
   windows-features:
     name: windows check (${{ matrix.name }})
     runs-on: windows-latest
-    env:
-      # The `cmake` crate probes for a Visual Studio generator and panics with
-      # "couldn't determine visual studio generator" in a plain runner shell,
-      # which has no MSVC developer environment activated. Both `aec-rs-sys`
-      # (SpeexDSP) and `audiopus_sys` (Opus) build through it. Naming the
-      # generator is enough; windows-latest ships VS 2022.
-      CMAKE_GENERATOR: "Visual Studio 17 2022"
     strategy:
       fail-fast: false
       matrix:
@@ -181,6 +174,11 @@ jobs:
             flags: "--all-features"
     steps:
       - uses: actions/checkout@v4
+      # Activates the MSVC developer environment. Without it the `cmake` crate
+      # panics with "couldn't determine visual studio generator", and naming a
+      # generator explicitly only moves the error on to "could not find any
+      # instance of Visual Studio". aec-rs-sys and audiopus_sys both need it.
+      - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # `aec-rs-sys` generates bindings with bindgen, which needs libclang. The
