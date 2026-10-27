@@ -31,9 +31,13 @@
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
-use splitstream::{AudioSource, SplitStreamBuilder, Transcript};
+use splitstream::SplitStreamBuilder;
+#[cfg(target_os = "macos")]
+use splitstream::{AudioSource, Transcript};
 
 /// Where the unpacked Parakeet EOU model lives.
 fn model_dir() -> PathBuf {
@@ -55,6 +59,7 @@ fn require_model() -> PathBuf {
 }
 
 /// Words the speech synthesiser says and the transcript should contain.
+#[cfg(target_os = "macos")]
 const SPOKEN: &str = "the quick brown fox jumps over the lazy dog";
 
 /// Speak `SPOKEN` through the default output device, so system-audio capture
@@ -69,6 +74,10 @@ fn speak() -> std::io::Result<std::process::Child> {
 }
 
 /// Collect transcripts until `predicate` is satisfied or `timeout` elapses.
+///
+/// Only the speech-driven tests inspect a transcript stream's contents, and
+/// those are macOS-only; the handle tests just watch the stream open and close.
+#[cfg(target_os = "macos")]
 async fn collect_until(
     stream: &mut splitstream::TranscriptStream,
     timeout: Duration,
