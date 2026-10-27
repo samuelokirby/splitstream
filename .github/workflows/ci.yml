@@ -94,7 +94,11 @@ jobs:
   # oniguruma, ring), so everything past the pure-Rust core is checked here.
   windows-test:
     name: windows test
-    runs-on: windows-latest
+    # Pinned, not `windows-latest`: that image now ships Visual Studio 18, and
+    # the `cmake` crate (0.1.54) panics with "unsupported or unknown
+    # VisualStudio version: 18.0" because it only recognises up to VS 17. Both
+    # aec-rs-sys and whisper-rs-sys build through it. windows-2022 has VS 17.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       # Activates the MSVC developer environment. Without it the `cmake` crate
@@ -124,7 +128,11 @@ jobs:
 
   windows-clippy:
     name: windows clippy
-    runs-on: windows-latest
+    # Pinned, not `windows-latest`: that image now ships Visual Studio 18, and
+    # the `cmake` crate (0.1.54) panics with "unsupported or unknown
+    # VisualStudio version: 18.0" because it only recognises up to VS 17. Both
+    # aec-rs-sys and whisper-rs-sys build through it. windows-2022 has VS 17.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       # Activates the MSVC developer environment. Without it the `cmake` crate
@@ -153,7 +161,11 @@ jobs:
 
   windows-features:
     name: windows check (${{ matrix.name }})
-    runs-on: windows-latest
+    # Pinned, not `windows-latest`: that image now ships Visual Studio 18, and
+    # the `cmake` crate (0.1.54) panics with "unsupported or unknown
+    # VisualStudio version: 18.0" because it only recognises up to VS 17. Both
+    # aec-rs-sys and whisper-rs-sys build through it. windows-2022 has VS 17.
+    runs-on: windows-2022
     strategy:
       fail-fast: false
       matrix:
