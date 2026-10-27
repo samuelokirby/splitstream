@@ -1,0 +1,2 @@
+# Match the crate's declared MSRV so clippy does not suggest newer-std idioms.
+msrv = "1.85"

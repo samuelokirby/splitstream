@@ -1,0 +1,65 @@
+# cargo-deny configuration for splitstream.
+# Run with: cargo deny check
+
+[graph]
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+]
+all-features = true
+
+[advisories]
+version = 2
+# Each entry is a crate nobody upstream maintains any more, reached only through
+# an optional feature, with no patched version to move to. Re-check on every
+# dependency bump: these are accepted risks, not permanent grants.
+ignore = [
+    # `paste` is archived by its author with no successor release. Reached via
+    # tokenizers -> parakeet-rs (the `parakeet` feature). It is a compile-time
+    # proc-macro with no runtime surface. Drops out if parakeet-rs migrates to
+    # `pastey`.
+    "RUSTSEC-2024-0436",
+    # `audiopus_sys` is unmaintained. Reached via the `opus` crate, i.e. only
+    # with the `deepgram` feature. Revisit if an alternative Opus binding
+    # appears; the default build does not pull it in at all.
+    "RUSTSEC-2026-0150",
+]
+
+[licenses]
+version = 2
+# Permissive licenses only. splitstream itself is MIT; anything copyleft in the
+# dependency graph would undermine that, so it must be reviewed explicitly.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # Public-domain dedications. No obligations of any kind.
+    "Unlicense",     # whisper-rs, whisper-rs-sys (`whisper` feature)
+    "CC0-1.0",       # tiny-keccak, via config -> rust-ini (`cli` feature)
+    # Permissive data licence used for the bundled root-certificate stores.
+    "CDLA-Permissive-2.0", # webpki-roots, webpki-root-certs (`cli` feature)
+    # File-level copyleft. Obligations attach only to modified MPL files, which
+    # splitstream does not have: `colored` is consumed unmodified, and only by
+    # the demo binary behind the `cli` feature. It reaches no library consumer.
+    "MPL-2.0",       # colored (`cli` feature)
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,17 +1,20 @@
+# Configuration for the `splitstream` demo binary (cargo run --features cli).
+# Library users configure everything through SplitStreamBuilder instead.
 
-compliance_mode_on_start = false # If true, system audio won't be captured until the user explicitly enables it
-echo_cancellation = true # If true, echo cancellation will be applied to microphone input
-# Transcription backend: "deepgram" (cloud, low latency) | "whisper" (local) | "parakeet" (local, streaming)
+# If true, system audio is not captured until the app explicitly unmutes it.
+compliance_mode_on_start = false
+
+# Apply acoustic echo cancellation to the microphone using system audio as the
+# reference signal.
+echo_cancellation = true
+
+# "parakeet" (local, default feature) | "deepgram" (cloud, `deepgram` feature)
 transcription_backend = "parakeet"
 
-# Required when transcription_backend = "whisper"
-whisper_model_path = "./models/ggml-small.en.bin"
-
-# Inference window in seconds. Tune to your model:
-#   tiny / base:        1–2
-#   small:              2–3
-#   large-v3-turbo:     4–5
-whisper_window_seconds = 3
-
-# Required when transcription_backend = "parakeet"
+# Required when transcription_backend = "parakeet".
+# `download-parakeet` prints the path it wrote to; the default is
+# ~/Library/Application Support/splitstream/models/parakeet-eou
 parakeet_model_dir = "./models/parakeet-eou"
+
+# Deepgram reads DEEPGRAM_API_KEY from the environment or from a .env file.
+# There is no API key setting here — never commit a key to a config file.

@@ -1,10 +1,19 @@
 /target
+
+# Audio artifacts produced during local testing
 *.wav
 *.opus
 *.ogg
+
+# Secrets and local configuration
 .env
+
+# Model weights are downloaded, never committed (see `download-parakeet`)
 models/
+*.part
+
+# Local agent/editor state
 CLAUDE.md
-.DS_Store
 .claude/
 vendor/
+.DS_Store

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Identity. TCC records consent against the bundle identifier *and* the
+       code-signing identity, so keep both stable across rebuilds or macOS will
+       treat every build as a brand-new app and prompt again. -->
+  <key>CFBundleIdentifier</key>
+  <string>com.example.splitstream-demo</string>
+  <key>CFBundleName</key>
+  <string>Splitstream Demo</string>
+  <key>CFBundleDisplayName</key>
+  <string>Splitstream Demo</string>
+  <key>CFBundleExecutable</key>
+  <string>splitstream-demo</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.2.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+
+  <!-- The Core Audio process-tap API (AudioHardwareCreateProcessTap) is
+       API_AVAILABLE(macos(14.2)). Below that, splitstream returns
+       SplitStreamError::UnsupportedOsVersion before touching Core Audio. -->
+  <key>LSMinimumSystemVersion</key>
+  <string>14.2</string>
+
+  <!-- This demo is a console program with no window; without LSUIElement it
+       would put a permanent icon in the Dock. Delete this key for a real app. -->
+  <key>LSUIElement</key>
+  <true/>
+
+  <!-- ==== The two keys that make or break splitstream ==================== -->
+
+  <!-- Microphone (TCC service: kTCCServiceMicrophone). Prompted the first time
+       cpal opens the default input device. Without this key the process is
+       killed by the system the moment it tries. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Splitstream Demo transcribes what you say during a meeting.</string>
+
+  <!-- System audio capture (its own TCC category, separate from the
+       microphone). Prompted when IO starts on the tap-backed aggregate device.
+       If this key is missing, TCC denies silently: tap creation can still
+       return noErr and you simply get no system audio, which is the single
+       most common way a splitstream integration "works but is silent". -->
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Splitstream Demo transcribes the other side of your call.</string>
+</dict>
+</plist>

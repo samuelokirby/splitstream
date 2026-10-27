@@ -1,0 +1,239 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+# NOTE: `RUSTFLAGS: -D warnings` is deliberately *not* set globally. Cargo
+# applies RUSTFLAGS to dependencies as well, so a warning introduced by a new
+# rustc release in any transitive crate would turn CI red for reasons this
+# repository cannot fix. `-D warnings` is passed after `--` to clippy instead,
+# where it applies only to splitstream's own code.
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cmake (deepgram/opus build dependency)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cmake (deepgram/opus build dependency)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      - run: cargo test --all-features
+      - run: cargo test --all-features --doc
+
+  features:
+    name: check (${{ matrix.name }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            flags: ""
+          - name: no-default
+            flags: "--no-default-features"
+          - name: deepgram
+            flags: "--no-default-features --features deepgram"
+          - name: whisper
+            flags: "--no-default-features --features whisper"
+          - name: cli
+            flags: "--no-default-features --features cli"
+          - name: no-aec
+            flags: "--no-default-features --features parakeet"
+          - name: all-features
+            flags: "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cmake (deepgram/opus build dependency)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      # `-D warnings` after `--` applies to splitstream only, not to deps.
+      - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+
+  # --- Windows ---------------------------------------------------------------
+  # The only place the Windows build is genuinely verified. A macOS host cannot
+  # cross-compile the C-backed optional features (speexdsp, whisper.cpp, opus,
+  # oniguruma, ring), so everything past the pure-Rust core is checked here.
+  windows-test:
+    name: windows test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `aec-rs-sys` generates bindings with bindgen, which needs libclang. The
+      # runner image ships LLVM, so this only makes a missing one obvious
+      # instead of surfacing as an opaque bindgen failure.
+      - name: Confirm libclang is available for bindgen
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang -ErrorAction SilentlyContinue
+          if ($clang) { "clang: $($clang.Source)" }
+          elseif (Test-Path "C:\Program Files\LLVM\bin\libclang.dll") {
+            "libclang: C:\Program Files\LLVM\bin"
+            echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          }
+          else { "::error::No libclang found; aec-rs-sys cannot run bindgen."; exit 1 }
+      # cmake ships with the windows-latest image; MSVC provides the C toolchain
+      # that speexdsp, whisper.cpp and opus need.
+      - run: cargo test --all-features
+      - run: cargo test --all-features --doc
+
+  windows-clippy:
+    name: windows clippy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # `aec-rs-sys` generates bindings with bindgen, which needs libclang. The
+      # runner image ships LLVM, so this only makes a missing one obvious
+      # instead of surfacing as an opaque bindgen failure.
+      - name: Confirm libclang is available for bindgen
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang -ErrorAction SilentlyContinue
+          if ($clang) { "clang: $($clang.Source)" }
+          elseif (Test-Path "C:\Program Files\LLVM\bin\libclang.dll") {
+            "libclang: C:\Program Files\LLVM\bin"
+            echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          }
+          else { "::error::No libclang found; aec-rs-sys cannot run bindgen."; exit 1 }
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  windows-features:
+    name: windows check (${{ matrix.name }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            flags: ""
+          - name: no-default
+            flags: "--no-default-features"
+          - name: deepgram
+            flags: "--no-default-features --features deepgram"
+          - name: whisper
+            flags: "--no-default-features --features whisper"
+          - name: cli
+            flags: "--no-default-features --features cli"
+          - name: no-aec
+            flags: "--no-default-features --features parakeet"
+          - name: all-features
+            flags: "--all-features"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # `aec-rs-sys` generates bindings with bindgen, which needs libclang. The
+      # runner image ships LLVM, so this only makes a missing one obvious
+      # instead of surfacing as an opaque bindgen failure.
+      - name: Confirm libclang is available for bindgen
+        shell: pwsh
+        run: |
+          $clang = Get-Command clang -ErrorAction SilentlyContinue
+          if ($clang) { "clang: $($clang.Source)" }
+          elseif (Test-Path "C:\Program Files\LLVM\bin\libclang.dll") {
+            "libclang: C:\Program Files\LLVM\bin"
+            echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+          }
+          else { "::error::No libclang found; aec-rs-sys cannot run bindgen."; exit 1 }
+      - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+
+  # Confirms the platform guard still rejects everything else, rather than
+  # failing somewhere deep in a Core Audio or WASAPI binding.
+  unsupported-platform:
+    name: linux rejects cleanly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Expect a clear compile_error, not an FFI wall
+        shell: bash
+        run: |
+          if cargo check --no-default-features 2>build.log; then
+            echo "::error::Linux build unexpectedly succeeded"
+            exit 1
+          fi
+          if grep -q "supports macOS 14.2+ and Windows 10+ only" build.log; then
+            echo "Rejected with the intended message."
+          else
+            echo "::error::Failed for the wrong reason:"
+            tail -30 build.log
+            exit 1
+          fi
+
+  msrv:
+    name: MSRV 1.85
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      # `aec-rs-sys` builds speexdsp with cmake and is not optional, so even
+      # the default feature set needs it.
+      - name: Install cmake
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      - run: cargo check --all-targets
+
+  docs:
+    name: rustdoc
+    runs-on: macos-14
+    env:
+      RUSTDOCFLAGS: "--cfg docsrs -D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cmake (deepgram/opus build dependency)
+        run: brew list cmake >/dev/null 2>&1 || brew install cmake
+      - run: cargo doc --no-deps --all-features
+
+  deny:
+    name: cargo-deny
+    # `cargo-deny-action` is a Docker container action, which GitHub only runs
+    # on Linux runners. It inspects the lockfile and crate metadata, so the
+    # host platform does not matter.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

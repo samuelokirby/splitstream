@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Required to record audio. Mandatory under the App Sandbox, and expected
+       by the hardened runtime for a notarized build. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Uncomment to run sandboxed (required for the Mac App Store). Core Audio
+       process taps do work inside the sandbox, but you must keep
+       com.apple.security.device.audio-input above, and the model directory
+       must live inside the app's container or be reached through a
+       user-selected read-only file entitlement.
+
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-only</key>
+  <true/>
+  -->
+
+  <!-- The Deepgram backend opens an outbound WebSocket. Only meaningful when
+       sandboxed; harmless otherwise. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+</dict>
+</plist>
