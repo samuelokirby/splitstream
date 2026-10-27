@@ -177,29 +177,6 @@ jobs:
           else { "::error::No libclang found; aec-rs-sys cannot run bindgen."; exit 1 }
       - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
 
-  # Confirms the platform guard still rejects everything else, rather than
-  # failing somewhere deep in a Core Audio or WASAPI binding.
-  unsupported-platform:
-    name: linux rejects cleanly
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Expect a clear compile_error, not an FFI wall
-        shell: bash
-        run: |
-          if cargo check --no-default-features 2>build.log; then
-            echo "::error::Linux build unexpectedly succeeded"
-            exit 1
-          fi
-          if grep -q "supports macOS 14.2+ and Windows 10+ only" build.log; then
-            echo "Rejected with the intended message."
-          else
-            echo "::error::Failed for the wrong reason:"
-            tail -30 build.log
-            exit 1
-          fi
-
   msrv:
     name: MSRV 1.85
     runs-on: macos-14

@@ -287,11 +287,10 @@ impl ErrorReporter {
     /// Report a backend stopping, unless shutdown was requested — in which case
     /// stopping is the point, and a `BackendStopped` error would be noise a
     /// consumer cannot tell apart from a real mid-session crash.
-    // Only backends call this, and with no backend feature there are none.
-    #[cfg_attr(
-        not(any(feature = "deepgram", feature = "whisper", feature = "parakeet")),
-        allow(dead_code)
-    )]
+    // Only the parakeet and deepgram backends report a stop this way; the
+    // whisper threads exit without one. So this is unused whenever neither of
+    // those two is compiled in — including a whisper-only build.
+    #[cfg_attr(not(any(feature = "deepgram", feature = "parakeet")), allow(dead_code))]
     pub(crate) fn report_expected_stop(&self, err: SplitStreamError) {
         if self
             .shutting_down
